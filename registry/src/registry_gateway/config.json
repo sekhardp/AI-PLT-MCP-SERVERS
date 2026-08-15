@@ -1,0 +1,8 @@
+{
+    "servers": [
+        {
+            "name": "weather-server",
+            "url": "http://localhost:8020/sse"
+        }
+    ]
+}
