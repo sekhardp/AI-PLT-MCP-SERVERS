@@ -1,0 +1,20 @@
+[project]
+name = "bigQuery-server"
+version = "0.1.0"
+description = "MCP BigQuery Server with dual stdio/SSE support"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp[cli]>=1.0.0",   # The official MCP SDK
+    "fastmcp>=0.1.0",    # High-level developer-friendly framework
+    "fastapi>=0.115.0",  # Web framework to host HTTP/SSE endpoints
+    "uvicorn>=0.30.0",   # ASGI web server
+    "fastmcp-docs",
+    "google-cloud-bigquery>=3.23.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+bigQuery-server = "bigQuery_server.main:main"

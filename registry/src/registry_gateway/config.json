@@ -3,6 +3,10 @@
         {
             "name": "weather-server",
             "url": "http://localhost:8020/sse"
+        },
+        {
+            "name": "bigquery-server",
+            "url": "http://localhost:8030/sse"
         }
     ]
 }

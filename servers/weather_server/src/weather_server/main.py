@@ -8,7 +8,7 @@ mcp = FastMCP("weather-server")
 docs = FastMCPDocs(mcp,title="Weather Server Tools")
 
 # 2. Define a tool using the @mcp.tool decorator
-@mcp.tool()
+@mcp.tool(tags=["weather"])
 async def get_weather(latitude: float, longitude: float) -> str:
     """
     Get the current weather forecast for a given latitude and longitude.

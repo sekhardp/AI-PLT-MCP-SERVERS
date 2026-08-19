@@ -3,7 +3,9 @@ import asyncio
 import json
 import os
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+
+import httpx
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -162,6 +164,96 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/health")
+async def health_check():
+    """
+    Gateway health check endpoint.
+    """
+    return {"status": "ok", "service": "registry-gateway"}
+
+@app.get("/servers")
+async def get_servers():
+    """
+    List all configured downstream servers.
+    """
+    try:
+        servers = load_servers_config()
+        return {"servers": servers, "count": len(servers)}
+    except Exception as e:
+        return {"error": f"Failed to load servers: {str(e)}"}
+
+@app.get("/servers/status")
+async def get_servers_status():
+    """
+    Ping each registered server's SSE endpoint and report connection status.
+    """
+    servers = load_servers_config()
+    results = []
+    
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        for srv in servers:
+            name = srv["name"]
+            url = srv["url"]
+            try:
+                # Test connection by streaming the GET request.
+                # This retrieves headers and returns immediately without reading the infinite SSE stream body.
+                start_time = asyncio.get_event_loop().time()
+                async with client.stream("GET", url) as response:
+                    status = "online" if response.status_code == 200 else f"offline (HTTP {response.status_code})"
+                    latency = asyncio.get_event_loop().time() - start_time
+            except Exception as e:
+                status = f"offline ({type(e).__name__})"
+                latency = None
+            
+            results.append({
+                "name": name,
+                "url": url,
+                "status": status,
+                "latency_seconds": latency
+            })
+            
+    return {"servers": results, "count": len(results)}
+
+@app.get("/tools")
+async def get_tools(tag: Optional[str] = None):
+    """
+    List all aggregated tools from downstream servers, optionally filtered by tag.
+    """
+    servers = load_servers_config()
+    all_tools = []
+    
+    for srv in servers:
+        name = srv["name"]
+        url = srv["url"]
+        try:
+            async with sse_client(url=url) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    tools_result = await session.list_tools()
+                    
+                    for tool in tools_result.tools:
+                        prefixed_name = f"{name.replace('-', '_')}__{tool.name}"
+                        tool_dict = tool.model_dump()
+                        tool_dict["name"] = prefixed_name
+                        
+                        # Extract tags from meta or _meta
+                        tags = []
+                        meta = tool_dict.get("meta") or tool_dict.get("_meta")
+                        if isinstance(meta, dict):
+                            fastmcp = meta.get("fastmcp", {})
+                            if isinstance(fastmcp, dict):
+                                tags = fastmcp.get("tags", [])
+                                
+                        tool_dict["tags"] = tags
+                        all_tools.append(tool_dict)
+        except Exception as e:
+            logger.error(f"Error fetching tools from '{name}' at {url}: {e}")
+            
+    if tag:
+        all_tools = [t for t in all_tools if tag.lower() in [tg.lower() for tg in t.get("tags", [])]]
+        
+    return {"tools": all_tools, "count": len(all_tools)}
 
 # SseServerTransport manages the connections and translates them into streams
 sse = SseServerTransport("/messages")

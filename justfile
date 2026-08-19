@@ -14,6 +14,14 @@ run-weather-stdio:
 run-weather-sse port="8020":
     uv run --package weather-server weather-server --transport sse --port {{port}}
 
+# Run the BigQuery Server locally using stdio transport
+run-bigquery-stdio:
+    uv run --package bigQuery-server bigQuery-server --transport stdio
+
+# Run the BigQuery Server locally using SSE transport on a specific port
+run-bigquery-sse port="8030":
+    uv run --package bigQuery-server bigQuery-server --transport sse --port {{port}}
+
 # Run the Registry Gateway locally using stdio transport
 run-gateway-stdio:
     uv run --package registry-gateway registry-gateway --transport stdio
@@ -24,7 +32,7 @@ run-gateway-sse port="8081":
 
 # Run the verification test client script
 test-client:
-    uv run python .gemini/antigravity-ide/brain/650ceb51-5366-449b-9025-24ac39fc132d/scratch/test_client.py
+    uv run python ~/.gemini/antigravity-ide/brain/650ceb51-5366-449b-9025-24ac39fc132d/scratch/test_client.py
 
 # Build and start the services locally via Docker Compose
 docker-up:
@@ -37,3 +45,7 @@ docker-down:
 # Launch the official visual MCP Inspector for the Weather Server
 inspect:
     uv run --package weather-server fastmcp dev inspector servers/weather_server/src/weather_server/main.py
+
+# Launch the official visual MCP Inspector for the BigQuery Server
+inspect-bigquery:
+    uv run --package bigQuery-server fastmcp dev inspector servers/bigQuery_server/src/bigQuery_server/main.py
