@@ -41,6 +41,7 @@ steps:
       - >-
         --update-labels=managed-by=gcp-cloud-build-deploy-cloud-run,gcb-trigger-id=$_TRIGGER_ID,gcb-trigger-region=$LOCATION,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID
       - '--region=$_DEPLOY_REGION'
+      - '--memory=1Gi'
       - '--quiet'
     id: Deploy
     entrypoint: gcloud

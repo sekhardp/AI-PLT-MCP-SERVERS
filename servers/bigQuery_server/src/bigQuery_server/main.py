@@ -35,7 +35,7 @@ async def run_query(query: str) -> str:
         client = get_client()
         # Run query job (make sure query is read-only or restricted by IAM permissions)
         query_job = client.query(query)
-        results = query_job.result() # Synchronously wait for the query to finish
+        results = query_job.result(max_results=2000) # Synchronously wait for the query to finish (limit to 2000 rows to prevent OOM)
         
         # Process and format rows
         import csv
