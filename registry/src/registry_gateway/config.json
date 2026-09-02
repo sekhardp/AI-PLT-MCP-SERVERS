@@ -1,7 +1,7 @@
 {
     "servers": [
         {
-            "name": "weather-server",
+            "name": "rag-server",
             "url": "http://localhost:8020/sse"
         },
         {

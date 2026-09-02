@@ -22,7 +22,7 @@ steps:
         $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:latest
       - .
       - '-f'
-      - servers/weather_server/Dockerfile
+      - servers/rag_server/Dockerfile
     id: Build
   - name: gcr.io/cloud-builders/docker
     args:
@@ -58,8 +58,8 @@ substitutions:
   _AR_PROJECT_ID: beam-suntory-gemini-llm-poc
   _AR_REPOSITORY: cloud-run-source-deploy
   REPO_NAME: sekhardp-ai-plt-mcp-servers
-  _SERVICE_NAME: ai-plt-weather-mcp-sev
+  _SERVICE_NAME: ai-plt-rag-mcp-sev
   _DEPLOY_REGION: us-central1
 tags:
   - gcp-cloud-build-deploy-cloud-run
-  - ai-plt-weather-mcp-sev
+  - ai-plt-rag-mcp-sev

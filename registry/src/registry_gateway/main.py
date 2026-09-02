@@ -24,18 +24,19 @@ from mcp.client.session import ClientSession
 logger = logging.getLogger("registry-gateway")
 logging.basicConfig(level=logging.INFO)
 
-# Config path resolver
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
+# Config path resolver (configurable via env var)
+CONFIG_PATH = os.environ.get("REGISTRY_CONFIG_PATH", os.path.join(os.path.dirname(__file__), "config.json"))
 
 def load_servers_config() -> List[Dict[str, str]]:
     """
-    Loads downstream server URLs from config.json.
-    Also supports dynamic environment variable overrides (highly useful for cloud deployments).
-    Format: SERVER_WEATHER_SERVER_URL=http://weather-service:8000/sse
+    Loads downstream server URLs from config.json or environment variables.
+    Environment variables override or supply downstream servers:
+    Format: SERVER_<NAME>_URL=http://<host>:<port>/sse
+    e.g. SERVER_RAG_SERVER_URL=https://rag-mcp-xyz.a.run.app/sse
     """
-    servers = []
+    servers: List[Dict[str, str]] = []
     
-    # Read config.json
+    # Read config.json if present
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r") as f:
@@ -44,16 +45,16 @@ def load_servers_config() -> List[Dict[str, str]]:
         except Exception as e:
             logger.error(f"Failed to read config file {CONFIG_PATH}: {e}")
             
-    # Process Environment Overrides (e.g. for VMs/Cloud Run)
+    # Process Environment Overrides / Additions (e.g. for Cloud Run / Docker)
     for key, value in os.environ.items():
         if key.startswith("SERVER_") and key.endswith("_URL"):
-            # Translate e.g., SERVER_WEATHER_SERVER_URL -> weather-server
+            # Translate e.g., SERVER_RAG_SERVER_URL -> rag-server
             server_name = key[7:-4].lower().replace("_", "-")
             
             # Update existing, or append new
             found = False
             for srv in servers:
-                if srv["name"] == server_name or srv["name"].replace("-", "_") == server_name:
+                if srv["name"] == server_name or srv["name"].replace("-", "_") == server_name.replace("-", "_"):
                     srv["url"] = value
                     found = True
                     break

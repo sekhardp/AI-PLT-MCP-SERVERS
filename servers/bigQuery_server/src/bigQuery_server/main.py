@@ -1,3 +1,4 @@
+import os
 import argparse
 from typing import List, Optional
 from google.cloud import bigquery
@@ -19,8 +20,11 @@ def get_client() -> bigquery.Client:
     """
     global _client
     if _client is None:
-        # If project_id was passed via command line, use it; otherwise, autodetect
-        _client = bigquery.Client(project=project_id)
+        effective_project = project_id or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT")
+        if effective_project:
+            _client = bigquery.Client(project=effective_project)
+        else:
+            _client = bigquery.Client()
     return _client
 
 @mcp.tool(tags=["bigquery", "query"])
@@ -33,11 +37,9 @@ async def run_query(query: str) -> str:
     """
     try:
         client = get_client()
-        # Run query job (make sure query is read-only or restricted by IAM permissions)
         query_job = client.query(query)
-        results = query_job.result(max_results=2000) # Synchronously wait for the query to finish (limit to 2000 rows to prevent OOM)
+        results = query_job.result(max_results=2000)
         
-        # Process and format rows
         import csv
         import io
         output = io.StringIO()
@@ -61,8 +63,8 @@ async def list_datasets(project: Optional[str] = None) -> List[str]:
     """
     try:
         client = get_client()
-        # Use provided project or fall back to client's configured/detected project
-        datasets = list(client.list_datasets(project=project or client.project))
+        effective_project = project or client.project or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT")
+        datasets = list(client.list_datasets(project=effective_project))
         return [d.dataset_id for d in datasets]
     except Exception as e:
         return [f"Error listing datasets: {str(e)}"]
@@ -74,7 +76,7 @@ async def list_tables(dataset_id: str, project: Optional[str] = None) -> List[st
     """
     try:
         client = get_client()
-        target_project = project or client.project
+        target_project = project or client.project or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT")
         dataset_ref = client.dataset(dataset_id, project=target_project)
         tables = list(client.list_tables(dataset_ref))
         return [t.table_id for t in tables]
@@ -107,11 +109,9 @@ def main():
     )
     args = parser.parse_args()
 
-    # Set project ID for client initialization
     global project_id
     project_id = args.project
 
-    # Set up Swagger/API documentation endpoints
     import asyncio
     asyncio.run(docs.setup())
 

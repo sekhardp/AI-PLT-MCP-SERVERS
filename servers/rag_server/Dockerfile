@@ -9,10 +9,10 @@ ENV UV_COMPILE_BYTECODE=1
 
 # Copy root lockfile and workspace configurations
 COPY pyproject.toml uv.lock ./
-COPY servers/weather_server ./servers/weather_server
+COPY servers/rag_server ./servers/rag_server
 
-# Install only the weather-server package statically in the virtualenv
-RUN uv sync --frozen --no-dev --package weather-server --no-editable
+# Install only the rag-server package statically in the virtualenv
+RUN uv sync --frozen --no-dev --package rag-server --no-editable
 
 # 2. Production Stage: Create a clean runner image using the exact same base
 FROM python:3.12-slim
@@ -29,4 +29,4 @@ ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8080
 
 # Execute server using the dynamic PORT env var (required by Cloud Run)
-CMD ["sh", "-c", "weather-server --transport sse --port ${PORT:-8080}"]
+CMD ["sh", "-c", "rag-server --transport sse --port ${PORT:-8080}"]

@@ -1,33 +1,42 @@
 services:
-  weather-server:
+  rag-server:
     build:
       context: .
-      dockerfile: servers/weather_server/Dockerfile
+      dockerfile: servers/rag_server/Dockerfile
     ports:
-      - "8020:8080" # Maps local port 8020 to container port 8080
+      - "${RAG_SERVER_PORT:-8020}:8080" # Maps local port 8020 to container port 8080
     environment:
       - PORT=8080
+      - RAG_DB_URL=${RAG_DB_URL}
+      - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      - GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION:-us-central1}
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:ro
 
   bigquery-server:
     build:
       context: .
       dockerfile: servers/bigQuery_server/Dockerfile
     ports:
-      - "8030:8080" # Maps local port 8030 to container port 8080
+      - "${BIGQUERY_SERVER_PORT:-8030}:8080" # Maps local port 8030 to container port 8080
     environment:
       - PORT=8080
+      - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:ro
 
   registry-gateway:
     build:
       context: .
       dockerfile: registry/Dockerfile
     ports:
-      - "8081:8080" # Maps local port 8081 to container port 8080
+      - "${REGISTRY_GATEWAY_PORT:-8081}:8080" # Maps local port 8081 to container port 8080
     environment:
       - PORT=8080
-      # Connects to the weather-server service using docker's DNS resolution
-      - SERVER_WEATHER_SERVER_URL=http://weather-server:8080/sse
-      - SERVER_BIGQUERY_SERVER_URL=http://bigquery-server:8080/sse
+      - SERVER_RAG_SERVER_URL=${SERVER_RAG_SERVER_URL:-http://rag-server:8080/sse}
+      - SERVER_BIGQUERY_SERVER_URL=${SERVER_BIGQUERY_SERVER_URL:-http://bigquery-server:8080/sse}
     depends_on:
-      - weather-server
+      - rag-server
       - bigquery-server
