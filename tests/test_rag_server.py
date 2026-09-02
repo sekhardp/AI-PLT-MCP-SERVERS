@@ -125,6 +125,7 @@ def test_unconfigured_db_session_error(monkeypatch):
     """Verify that _get_session raises RuntimeError when AsyncRagSession is None."""
     import rag_server.main as rag_main
     monkeypatch.setattr(rag_main, "AsyncRagSession", None)
-    with pytest.raises(RuntimeError, match="RAG_DB_URL environment variable is not configured"):
+    with pytest.raises(RuntimeError, match="AsyncRagSession is not configured"):
         rag_main._get_session()
+
 

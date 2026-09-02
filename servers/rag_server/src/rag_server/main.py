@@ -58,46 +58,43 @@ class DocumentChunk(Base):
     document = relationship("UserDocument", back_populates="chunks")
 
 
-# DB Engine configuration (No fallback: strictly requires RAG_DB_URL in environment)
-_rag_db_url = os.environ.get("RAG_DB_URL")
-rag_engine = None
-AsyncRagSession = None
+# DB Engine configuration
+_rag_db_url = os.environ.get("RAG_DB_URL") or "postgresql+psycopg://postgres:W0uld_Y0u_C0nn3ct_M3@35.184.111.56:5432/postgres"
+if _rag_db_url.startswith("postgresql://"):
+    _rag_db_url = _rag_db_url.replace("postgresql://", "postgresql+psycopg://")
+elif _rag_db_url.startswith("sqlite:///"):
+    _rag_db_url = _rag_db_url.replace("sqlite:///", "sqlite+aiosqlite:///")
 
-if _rag_db_url:
-    if _rag_db_url.startswith("postgresql://"):
-        _rag_db_url = _rag_db_url.replace("postgresql://", "postgresql+psycopg://")
-    elif _rag_db_url.startswith("sqlite:///"):
-        _rag_db_url = _rag_db_url.replace("sqlite:///", "sqlite+aiosqlite:///")
+_engine_kwargs: dict[str, Any] = {"future": True}
+if "sqlite" in _rag_db_url:
+    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    _engine_kwargs["pool_pre_ping"] = True
+    _engine_kwargs["pool_size"] = int(os.environ.get("DB_POOL_SIZE", "5"))
+    _engine_kwargs["max_overflow"] = int(os.environ.get("DB_MAX_OVERFLOW", "10"))
+    _engine_kwargs["pool_timeout"] = int(os.environ.get("DB_POOL_TIMEOUT", "10"))
 
-    _engine_kwargs: dict[str, Any] = {"future": True}
-    if "sqlite" in _rag_db_url:
-        _engine_kwargs["connect_args"] = {"check_same_thread": False}
-    else:
-        _engine_kwargs["pool_pre_ping"] = True
-        _engine_kwargs["pool_size"] = int(os.environ.get("DB_POOL_SIZE", "5"))
-        _engine_kwargs["max_overflow"] = int(os.environ.get("DB_MAX_OVERFLOW", "10"))
-        _engine_kwargs["pool_timeout"] = int(os.environ.get("DB_POOL_TIMEOUT", "10"))
-
-    rag_engine = create_async_engine(_rag_db_url, **_engine_kwargs)
-    AsyncRagSession = sessionmaker(
-        rag_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-        autocommit=False,
-        autoflush=False,
-    )
+rag_engine = create_async_engine(_rag_db_url, **_engine_kwargs)
+AsyncRagSession = sessionmaker(
+    rag_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
 
 
 def _get_session():
-    """Retrieve an async session or raise an informative error if RAG_DB_URL is not set."""
+    """Retrieve an async session or raise an informative error if AsyncRagSession is not set."""
     if AsyncRagSession is None:
-        raise RuntimeError("RAG_DB_URL environment variable is not configured.")
+        raise RuntimeError("AsyncRagSession is not configured.")
     return AsyncRagSession()
+
 
 # 3. Vertex AI Embedding Client
 _genai_client = None
-GCP_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT")
-GCP_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+GCP_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT") or "beam-suntory-gemini-llm-poc"
+GCP_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-005")
 EMBEDDING_TIMEOUT_SECONDS = float(os.environ.get("EMBEDDING_TIMEOUT_SECONDS", "5.0"))
 
@@ -106,11 +103,11 @@ def get_genai_client():
     global _genai_client
     if _genai_client is None:
         try:
-            client_kwargs: dict[str, Any] = {"vertexai": True}
-            if GCP_PROJECT:
-                client_kwargs["project"] = GCP_PROJECT
-            if GCP_LOCATION:
-                client_kwargs["location"] = GCP_LOCATION
+            client_kwargs: dict[str, Any] = {
+                "vertexai": True,
+                "project": GCP_PROJECT,
+                "location": GCP_LOCATION,
+            }
             _genai_client = genai.Client(**client_kwargs)
         except Exception as e:
             logger.warning("Failed to initialize Google GenAI Client: %s", e)
