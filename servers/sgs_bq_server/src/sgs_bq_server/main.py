@@ -1,87 +1,158 @@
+import argparse
+import json
+import logging
 import os
 from pathlib import Path
+from typing import Optional
 
 from fastmcp import FastMCP
-from fastmcp.server.providers.skills import SkillProvider
+from fastmcp_docs import FastMCPDocs
 from google.auth import jwt
 from google.cloud import bigquery
-from starlette.applications import Starlette
+from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Route
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("sgs-bq-server")
 
-# Initialize the FastMCP server
-mcp = FastMCP("Product Information Server")
-mcp.add_provider(SkillProvider(Path(__file__).resolve().parent))
+# Initialize the FastMCP server and documentation
+mcp = FastMCP("sgs-bq-server")
+docs = FastMCPDocs(mcp, title="Suntory GCP BigQuery Procurement Analytics Tools")
 
-# 1. Define paths and targets
-SERVICE_ACCOUNT_FILE = Path(os.getenv("SERVICE_ACCOUNT_FILE", os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json"))).expanduser()
-PROJECT_ID = os.getenv("BIGQUERY_PROJECT_ID", "bsi-sftphub-dev")
+# Default configuration
 HOST = os.getenv("MCP_HOST", "0.0.0.0")
-PORT = int(os.getenv("MCP_PORT", "4208"))
-TRANSPORT = os.getenv("MCP_TRANSPORT", "streamable-http")
-
-# The target audience claim for the BigQuery API
-# For BigQuery APIs, the audience value must be exactly this URL
+PORT = int(os.getenv("PORT", os.getenv("MCP_PORT", "8040")))
+TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio")
+PROJECT_ID = os.getenv("BIGQUERY_PROJECT_ID", "bsi-sftphub-dev")
 AUDIENCE = os.getenv("BIGQUERY_AUDIENCE", "https://bigquery.googleapis.com/")
 
+service_account_override: Optional[str] = None
 credentials = None
-client = None
+client: Optional[bigquery.Client] = None
+
+
+def resolve_service_account_path(explicit_path: Optional[str] = None) -> Optional[Path]:
+    """Hierarchically resolve service account JSON file from arguments, env vars, Secret Manager, or standard paths."""
+    candidates = [
+        explicit_path,
+        os.getenv("SERVICE_ACCOUNT_FILE"),
+        os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+        Path("/secrets/credentials.json"),
+        Path("/secrets/sgs-bq-credentials"),
+        Path(__file__).resolve().parent.parent.parent / "credentials.json",
+        Path.cwd() / "credentials.json",
+        Path.cwd() / "servers" / "sgs_bq_server" / "credentials.json",
+    ]
+    for c in candidates:
+        if c:
+            p = Path(c).expanduser().resolve()
+            if p.exists() and p.is_file():
+                return p
+    return None
+
+
+def get_bigquery_credentials() -> tuple[Optional[object], str]:
+    """Resolve credentials from env JSON, Secret Manager files, or ADC."""
+    # 1. Direct JSON string from environment variable (Secret Manager env var)
+    sa_json = os.getenv("SERVICE_ACCOUNT_JSON") or os.getenv("SERVICE_ACCOUNT_INFO")
+    if sa_json:
+        try:
+            info = json.loads(sa_json)
+            creds = jwt.Credentials.from_service_account_info(info, audience=AUDIENCE)
+            return creds, "env_json_jwt"
+        except Exception as e:
+            try:
+                from google.oauth2 import service_account
+                creds = service_account.Credentials.from_service_account_info(json.loads(sa_json))
+                return creds, "env_json_standard"
+            except Exception:
+                pass
+
+    # 2. Base64-encoded JSON from environment variable
+    sa_b64 = os.getenv("SERVICE_ACCOUNT_BASE64")
+    if sa_b64:
+        try:
+            import base64
+            decoded = base64.b64decode(sa_b64).decode("utf-8")
+            info = json.loads(decoded)
+            creds = jwt.Credentials.from_service_account_info(info, audience=AUDIENCE)
+            return creds, "env_base64_jwt"
+        except Exception:
+            pass
+
+    # 3. File path (Secret Manager volume mount or local credentials.json)
+    sa_path = resolve_service_account_path(service_account_override)
+    if sa_path:
+        try:
+            creds = jwt.Credentials.from_service_account_file(str(sa_path), audience=AUDIENCE)
+            return creds, f"file_jwt:{sa_path}"
+        except Exception as e:
+            try:
+                from google.oauth2 import service_account
+                creds = service_account.Credentials.from_service_account_file(str(sa_path))
+                return creds, f"file_standard:{sa_path}"
+            except Exception:
+                pass
+
+    return None, "adc"
 
 
 def _health_payload() -> dict[str, object]:
+    sa_path = resolve_service_account_path(service_account_override)
+    _, auth_mode = get_bigquery_credentials()
     return {
-        "service": "suntory-gcp-productivity-bqclient-mcp",
+        "service": "sgs-bq-server",
         "status": "ok",
         "transport": TRANSPORT,
         "host": HOST,
         "port": PORT,
         "project_id": PROJECT_ID,
-        "service_account_file": str(SERVICE_ACCOUNT_FILE),
+        "service_account_file": str(sa_path) if sa_path else None,
+        "auth_mode": auth_mode,
     }
 
 
-async def healthcheck(request) -> JSONResponse:
+@mcp.custom_route("/health", methods=["GET"])
+async def healthcheck(request: Request) -> JSONResponse:
     return JSONResponse(_health_payload())
 
 
-async def startup_smoke_check() -> None:
-    if not SERVICE_ACCOUNT_FILE.exists():
-        raise FileNotFoundError(f"Service account file not found: {SERVICE_ACCOUNT_FILE}")
-    if not str(SERVICE_ACCOUNT_FILE).endswith(".json"):
-        raise ValueError("SERVICE_ACCOUNT_FILE should point to a JSON credentials file")
+def startup_smoke_check() -> None:
+    """Smoke check to verify server configuration."""
+    _, auth_mode = get_bigquery_credentials()
+    logger.info(f"Server initialized with authentication mode: {auth_mode}")
 
 
-app = Starlette(routes=[Route("/health", healthcheck, methods=["GET"])])
-
-
-def get_bigquery_client():
+def get_bigquery_client() -> bigquery.Client:
+    """Lazily initialize BigQuery client with JWT credentials or Application Default Credentials."""
     global credentials, client
     if client is None:
-        if not SERVICE_ACCOUNT_FILE.exists():
-            raise FileNotFoundError(f"Service account file not found: {SERVICE_ACCOUNT_FILE}")
-        credentials = jwt.Credentials.from_service_account_file(
-            str(SERVICE_ACCOUNT_FILE),
-            audience=AUDIENCE,
-        )
-        client = bigquery.Client(credentials=credentials, project=PROJECT_ID)
+        creds, mode = get_bigquery_credentials()
+        if creds:
+            client = bigquery.Client(credentials=creds, project=PROJECT_ID)
+            logger.info(f"Initialized BigQuery client with {mode} for project {PROJECT_ID}")
+        else:
+            client = bigquery.Client(project=PROJECT_ID)
+            logger.info(f"Initialized BigQuery client with ADC for project {PROJECT_ID}")
     return client
 
+
 def query_bigquery(query: str, parameters: list[tuple[str, str, object]]) -> str:
-    """Execute a BigQuery SQL query and return rows as a string."""
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter(name, dtype, value)
-            for name, dtype, value in parameters
-        ]
-    )
-    print("Submitting query job to BigQuery using JWT authentication...",query,parameters)
-    query_job = get_bigquery_client().query(query, job_config=job_config)
+    """Execute a BigQuery SQL query and return rows formatted as JSON."""
     try:
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter(name, dtype, value)
+                for name, dtype, value in parameters
+            ]
+        )
+        logger.debug(f"Submitting query: {query} with parameters: {parameters}")
+        query_job = get_bigquery_client().query(query, job_config=job_config)
         results = query_job.result()
         rows = [dict(row) for row in results]
-        return str(rows)
+        return json.dumps(rows, default=str, indent=2)
     except Exception as e:
+        logger.error(f"Error executing query: {e}")
         return f"Error executing query: {str(e)}"
 
 
@@ -91,7 +162,7 @@ def _build_filtered_query(
     filters: list[tuple[str, str, object, str]] | None = None,
 ) -> tuple[str, list[tuple[str, str, object]]]:
     """Append optional WHERE clauses and a LIMIT parameter to a SQL query."""
-    query = base_query.rstrip()
+    query = base_query.rstrip().rstrip(";")
     clauses: list[str] = []
     parameters: list[tuple[str, str, object]] = []
 
@@ -114,7 +185,12 @@ def _build_filtered_query(
     parameters.append(("limit", "INT64", limit))
     return query, parameters
 
-@mcp.tool()
+
+# ==============================================================================
+# MCP Tools (18 Analytical Tools for Suntory GCP BigQuery Procurement Pilot)
+# ==============================================================================
+
+@mcp.tool(tags=["procurement", "account_assignment"])
 def Gold_Account_Assignment_Fact(
     limit: int = 10,
     company_code: str | None = None,
@@ -137,23 +213,23 @@ def Gold_Account_Assignment_Fact(
     """
     filters: list[tuple[str, str, object, str]] = []
     if company_code is not None:
-        filters.append(("lower(company_code)", "LIKE", company_code.lower(), 'STRING'))
+        filters.append(("lower(company_code)", "LIKE", company_code.lower(), "STRING"))
     if purchasing_org is not None:
-
-        filters.append(("lower(purchasing_org)", "LIKE", purchasing_org.lower(), 'STRING'))
+        filters.append(("lower(purchasing_org)", "LIKE", purchasing_org.lower(), "STRING"))
     if purchasing_group is not None:
-        filters.append(("lower(purchasing_group)", "LIKE", purchasing_group.lower(), 'STRING'))
+        filters.append(("lower(purchasing_group)", "LIKE", purchasing_group.lower(), "STRING"))
     if material_group is not None:
-        filters.append(("lower(material_group)", "LIKE", material_group.lower(), 'STRING'))
+        filters.append(("lower(material_group)", "LIKE", material_group.lower(), "STRING"))
     if cost_center is not None:
-        filters.append(("lower(cost_center)", "LIKE", cost_center.lower(), 'STRING'))
+        filters.append(("lower(cost_center)", "LIKE", cost_center.lower(), "STRING"))
     if gl_account is not None:
-        filters.append(("lower(gl_account)", "LIKE", gl_account.lower(), 'STRING'))
+        filters.append(("lower(gl_account)", "LIKE", gl_account.lower(), "STRING"))
 
     query, parameters = _build_filtered_query(QUERY, limit, filters)
-    return query_bigquery(query,parameters)
+    return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "marketing", "brand"])
 def Gold_Content_Brand_Investment(
     limit: int = 10,
     company_code: str | None = None,
@@ -184,9 +260,10 @@ def Gold_Content_Brand_Investment(
         filters.append(("lower(material_group)", "LIKE", material_group.lower(), "STRING"))
 
     query, parameters = _build_filtered_query(QUERY, limit, filters)
-    return query_bigquery(query,parameters)
+    return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "cost_center"])
 def Gold_Cost_Center_Intelligence(limit: int = 10) -> str:
     """Use this tool to retrieve cost-center spending intelligence, peer comparisons and purchasing behaviour patterns.
 
@@ -197,13 +274,13 @@ def Gold_Cost_Center_Intelligence(limit: int = 10) -> str:
     - Which departments buy the same services from different suppliers?
     """
     QUERY = r"""
-    SELECT cost_center, company_code, assignment_count, spend_line_count, vendor_count, material_count, material_group_count, purchasing_org_count, plant_count, gl_account_count, profit_center_count, internal_order_count, wbs_count, total_po_value, total_invoice_value, total_history_value, total_spend_usd, average_spend_usd, average_line_spend_usd, average_vendor_spend_usd, spend_band, fragmented_vendor_flag, diversified_spend_flag, multi_procurement_flag, diversified_gl_flag, multi_profit_center_flag, internal_order_intensive_flag, project_driven_flag, first_po_date, last_po_date, first_invoice_date, last_invoice_date, gold_load_ts, gold_as_of_date FROM `bsi-sftphub-dev.DNT_MCP_PILOT.gold_cost_center_intelligence` LIMIT @limit;
+    SELECT cost_center, company_code, assignment_count, spend_line_count, vendor_count, material_count, material_group_count, purchasing_org_count, plant_count, gl_account_count, profit_center_count, internal_order_count, wbs_count, total_po_value, total_invoice_value, total_history_value, total_spend_usd, average_spend_usd, average_line_spend_usd, average_vendor_spend_usd, spend_band, fragmented_vendor_flag, diversified_spend_flag, multi_procurement_flag, diversified_gl_flag, multi_profit_center_flag, internal_order_intensive_flag, project_driven_flag, first_po_date, last_po_date, first_invoice_date, last_invoice_date, gold_load_ts, gold_as_of_date FROM `bsi-sftphub-dev.DNT_MCP_PILOT.gold_cost_center_intelligence`
     """
-    return query_bigquery(QUERY, [
-        ("limit", "INT64", limit),
-    ])
+    query, parameters = _build_filtered_query(QUERY, limit)
+    return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "spend_fact"])
 def Gold_Enterprise_Spend_Fact(
     limit: int = 10,
     company_code: str | None = None,
@@ -233,7 +310,8 @@ def Gold_Enterprise_Spend_Fact(
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "executive", "dashboard"])
 def Gold_Executive_Dashboard(
     limit: int = 10,
     min_total_spend_usd: float | None = None,
@@ -275,7 +353,8 @@ def Gold_Executive_Dashboard(
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "financial_attribution"])
 def Gold_Financial_Attribution(
     limit: int = 10,
     company_code: str | None = None,
@@ -307,7 +386,8 @@ def Gold_Financial_Attribution(
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "gl_account"])
 def Gold_GL_Account_Intelligence(
     limit: int = 10,
     gl_account: str | None = None,
@@ -333,7 +413,8 @@ def Gold_GL_Account_Intelligence(
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "invoice"])
 def Gold_Invoice_Fact(
     limit: int = 10,
     invoice_number: str | None = None,
@@ -363,7 +444,8 @@ def Gold_Invoice_Fact(
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "material"])
 def Gold_Material_Intelligence(
     limit: int = 10,
     material_id: str | None = None,
@@ -389,7 +471,8 @@ def Gold_Material_Intelligence(
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "trend"])
 def Gold_Monthly_Spend_Trend(
     limit: int = 10,
     fiscal_year: str | None = None,
@@ -418,7 +501,8 @@ def Gold_Monthly_Spend_Trend(
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "kpi"])
 def Gold_Procurement_KPI(
     limit: int = 10,
     first_po_date_from: str | None = None,
@@ -451,7 +535,8 @@ def Gold_Procurement_KPI(
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "savings"])
 def Gold_Savings_Opportunity(
     limit: int = 10,
     company_code: str | None = None,
@@ -473,7 +558,8 @@ def Gold_Savings_Opportunity(
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "shadow_it"])
 def Gold_Shadow_IT(
     limit: int = 10,
     vendor_name_full: str | None = None,
@@ -505,7 +591,8 @@ def Gold_Shadow_IT(
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "supplier_risk"])
 def Gold_Supplier_Risk(
     limit: int = 10,
     vendor_name: str | None = None,
@@ -534,7 +621,8 @@ def Gold_Supplier_Risk(
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "supply_chain"])
 def Gold_Supply_Chain_Intelligence(
     limit: int = 10,
     company_code: str | None = None,
@@ -558,12 +646,13 @@ def Gold_Supply_Chain_Intelligence(
     if purchasing_org is not None:
         filters.append(("lower(purchasing_org)", "LIKE", purchasing_org.lower(), "STRING"))
     if purchasing_group is not None:
-        filters.append(("lower(purchasing_group", "LIKE", purchasing_group, "STRING"))
+        filters.append(("lower(purchasing_group)", "LIKE", purchasing_group.lower(), "STRING"))
 
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "vendor"])
 def Gold_Vendor_Intelligence(
     limit: int = 10,
     vendor_name: str | None = None,
@@ -593,7 +682,8 @@ def Gold_Vendor_Intelligence(
     query, parameters = _build_filtered_query(QUERY, limit, filters)
     return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "vendor", "similarity"])
 def Gold_Vendor_Similarity(limit: int = 10) -> str:
     """Use this tool to identify vendors providing similar or overlapping products or services by comparing classifications, purchasing patterns and business capabilities.
 
@@ -604,13 +694,13 @@ def Gold_Vendor_Similarity(limit: int = 10) -> str:
     - Which vendors overlap in functionality?
     """
     QUERY = r"""
-    SELECT vendor_id_a, vendor_id_b, vendor_name_a, vendor_name_b, activity_a, activity_b, family_a, family_b, spend_a, spend_b, company_count_a, company_count_b, material_group_count_a, material_group_count_b, tier_a, tier_b, same_activity, same_family, same_technology, same_consulting, same_content, same_supply_chain, same_hr, similarity_score, similarity_level, gold_load_ts, gold_as_of_date FROM `bsi-sftphub-dev.DNT_MCP_PILOT.gold_vendor_similarity` LIMIT @limit;
+    SELECT vendor_id_a, vendor_id_b, vendor_name_a, vendor_name_b, activity_a, activity_b, family_a, family_b, spend_a, spend_b, company_count_a, company_count_b, material_group_count_a, material_group_count_b, tier_a, tier_b, same_activity, same_family, same_technology, same_consulting, same_content, same_supply_chain, same_hr, similarity_score, similarity_level, gold_load_ts, gold_as_of_date FROM `bsi-sftphub-dev.DNT_MCP_PILOT.gold_vendor_similarity`
     """
-    return query_bigquery(QUERY, [
-        ("limit", "INT64", limit),
-    ])
+    query, parameters = _build_filtered_query(QUERY, limit)
+    return query_bigquery(query, parameters)
 
-@mcp.tool()
+
+@mcp.tool(tags=["procurement", "vendor", "classification"])
 def Gold_Vendor_Spend_Classification(
     limit: int = 10,
     vendor_id: str | None = None,
@@ -630,14 +720,65 @@ def Gold_Vendor_Spend_Classification(
     return query_bigquery(query, parameters)
 
 
-if __name__ == "__main__":
+# ==============================================================================
+# CLI Entrypoint
+# ==============================================================================
+
+def main():
+    """Run the SGS BigQuery MCP server with CLI argument support."""
+    global HOST, PORT, TRANSPORT, PROJECT_ID, service_account_override
+    parser = argparse.ArgumentParser(description="Run the SGS BigQuery MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "http", "streamable-http"],
+        default=os.getenv("MCP_TRANSPORT", "stdio"),
+        help="Transport protocol: 'stdio' (default, local process), 'sse', 'http', or 'streamable-http'",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("PORT", os.getenv("MCP_PORT", "8040"))),
+        help="Port to run the HTTP/SSE server (default: 8040)",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.getenv("MCP_HOST", "0.0.0.0"),
+        help="Host address to bind to (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--project",
+        default=os.getenv("BIGQUERY_PROJECT_ID", "bsi-sftphub-dev"),
+        help="GCP Project ID to use for the BigQuery client (default: bsi-sftphub-dev)",
+    )
+    parser.add_argument(
+        "--service-account",
+        default=None,
+        help="Path to the service-account JSON file",
+    )
+    args = parser.parse_args()
+
+    HOST = args.host
+    PORT = args.port
+    TRANSPORT = args.transport
+    PROJECT_ID = args.project
+    if args.service_account:
+        service_account_override = args.service_account
+
     startup_smoke_check()
-    if TRANSPORT == "streamable-http":
-        from mcp.server.fastmcp.server import FastMCP as MCPServerImpl
-        print(f"Starting FastMCP server on http://{HOST}:{PORT}/mcp")
-        app = mcp.http_app(path="/mcp")
-        app.add_route("/health", healthcheck, methods=["GET"])
-        import uvicorn
-        uvicorn.run(app, host=HOST, port=PORT)
+
+    try:
+        import asyncio
+        asyncio.run(docs.setup())
+    except Exception as e:
+        logger.debug(f"Docs setup skipped: {e}")
+
+    if args.transport in ("sse", "http", "streamable-http"):
+        logger.info(f"Starting sgs-bq-server on {args.transport} transport at http://{args.host}:{args.port}")
+        mcp.run(transport=args.transport, host=args.host, port=args.port)
     else:
-        mcp.run(transport=TRANSPORT, mount_path="/")
+        logger.info("Starting sgs-bq-server on stdio transport...")
+        mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

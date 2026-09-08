@@ -8,8 +8,8 @@
             "name": "bigquery-server",
             "url": "http://localhost:8030/sse"
         },
-                {
-            "name": "sgs-prodctivity-bq-server",
+        {
+            "name": "sgs-bq-server",
             "url": "http://localhost:8040/sse"
         }
     ]

@@ -53,3 +53,7 @@ inspect-rag:
 # Launch the official visual MCP Inspector for the BigQuery Server
 inspect-bigquery:
     uv run --package bigQuery-server fastmcp dev inspector servers/bigQuery_server/src/bigQuery_server/main.py
+
+# Launch the official visual MCP Inspector for the BigQuery Server
+inspect-bigquery-sgs:
+    uv run --package sgs-bq-server fastmcp dev inspector servers/sgs_bq_server/src/sgs_bq_server/main.py

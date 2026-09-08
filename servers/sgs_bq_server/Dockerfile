@@ -1,47 +1,36 @@
-# Use an explicit, lightweight Python base
-FROM python:3.12-slim
+# 1. Build Stage: Resolve dependencies using uv in python-slim (glibc)
+FROM python:3.12-slim AS builder
 
-# Copy the modern uv package manager binary straight into the execution path
+# Install uv inside the builder
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Set working directory inside the container
+WORKDIR /app
+ENV UV_COMPILE_BYTECODE=1
+
+# Copy root lockfile and workspace configurations
+COPY pyproject.toml uv.lock ./
+COPY servers/sgs_bq_server ./servers/sgs_bq_server
+
+# Install only the sgs-bq-server package statically in the virtualenv
+RUN uv sync --frozen --no-dev --package sgs-bq-server --no-editable
+
+# 2. Production Stage: Create a clean runner image using the exact same base
+FROM python:3.12-slim
+
 WORKDIR /app
 
 # Prevent Python from writing .pyc files to disk and ensure immediate logs
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Expose default environment variables for config control
-ENV MCP_PORT=4208
-ENV MCP_HOST=0.0.0.0
-ENV SERVICE_ACCOUNT_FILE=/app/credentials.json
-ENV GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
-ENV BIGQUERY_PROJECT_ID=bsi-sftphub-dev
+# Copy the built virtual environment (which contains the installed code!)
+COPY --from=builder /app/.venv /app/.venv
 
-# 3. Copy ONLY the requirements file first to leverage Docker caching
-COPY requirements.txt .
+# Set path to use the virtual environment binaries directly
+ENV PATH="/app/.venv/bin:$PATH"
 
-# 4. Install the specified packages
-RUN pip install --no-cache-dir -r requirements.txt
+# Default container port
+EXPOSE 8080
 
-# Copy dependency mappings first to optimize layer caching
-COPY pyproject.toml /app/
-
-
-# Install exact lock dependencies using uv sync
-RUN uv sync --no-cache
-
-# Copy project runtime source code
-COPY server.py /app/
-
-# Copy project skills
-COPY SKILL.md /app/
-
-# Copy service account credentials into the image
-COPY credentials.json /app/
-
-# Open the network allocation port
-EXPOSE 4208
-
-# Execute the application through uv's managed virtual environment wrapper
-ENTRYPOINT ["uv", "run", "python", "server.py"]
+# Execute server using the dynamic PORT env var (required by Cloud Run & Docker)
+CMD ["sh", "-c", "sgs-bq-server --transport sse --port ${PORT:-8080}"]

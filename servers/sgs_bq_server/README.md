@@ -1,135 +1,77 @@
 # Suntory GCP Productivity MCP (BigQuery Client)
 
-This server exposes the same procurement and productivity analytics tools through FastMCP, but it reaches BigQuery through the official Google Python BigQuery client library rather than direct REST calls. It is intended for validating BigQuery access via the `google-cloud-bigquery` SDK and service-account JWT credentials.
+This server exposes procurement, spend analytics, and productivity tools through FastMCP, connecting to BigQuery via the official Google Cloud BigQuery client library (`google-cloud-bigquery`) and JWT / service account authentication.
 
-## What this server provides
+## Features
 
-- FastMCP HTTP endpoint for tool-based access
-- Procurement and productivity analytics tools backed by BigQuery views/tables in the `bsi-sftphub-dev.DNT_MCP_PILOT` dataset
-- BigQuery access through the `google-cloud-bigquery` client library
+- **18 Analytical Tools**: Comprehensive tools backed by BigQuery Gold tables/views in `bsi-sftphub-dev.DNT_MCP_PILOT`.
+- **Dual Transport Support**: Run seamlessly over `stdio` (local agent pipe) or `sse` / `http` (network endpoint).
+- **FastMCP Documentation & Skill Integration**: Integrated `FastMCPDocs` and skill definitions (`SKILL.md`) for AI agents.
+- **Robust Multi-mode Auth**: Automatically resolves service account credentials via `credentials.json`, `SERVICE_ACCOUNT_FILE`, `GOOGLE_APPLICATION_CREDENTIALS`, or GCP Application Default Credentials (ADC).
+- **Health Check**: Dedicated `/health` endpoint reporting connection and authentication status.
 
-## Runtime details
+## Runtime Details
 
 - Default host: `0.0.0.0`
-- Default port: `4208`
-- Transport: HTTP
-- Primary MCP endpoint: `http://localhost:4208/mcp`
+- Default port: `8040`
+- Supported Transports: `stdio`, `sse`, `http`, `streamable-http`
+- Primary SSE Endpoint: `http://localhost:8040/sse`
+- Health Endpoint: `http://localhost:8040/health`
 
-> The server uses the HTTP transport and exposes the MCP endpoint at `/mcp`. Older `/sse` and `/messages` paths are not the recommended entry points for this server.
+## Local Usage
 
-## Prerequisites
-
-- Python 3.11+
-- A Google Cloud service account JSON file with BigQuery access
-- The service account should have BigQuery permissions such as `roles/bigquery.dataViewer` or equivalent
-
-## Environment variables
-
-Set these before starting the server:
-
-- `MCP_HOST` – host interface to bind to (default `0.0.0.0`)
-- `MCP_PORT` – port to expose (default `4208`)
-- `MCP_TRANSPORT` – transport mode (default `http`)
-- `SERVICE_ACCOUNT_FILE` or `GOOGLE_APPLICATION_CREDENTIALS` – path to the service-account JSON file
-- `BIGQUERY_PROJECT_ID` – target Google Cloud project (default `bsi-sftphub-dev`)
-- `BIGQUERY_AUDIENCE` – BigQuery audience used by the JWT credentials (default `https://bigquery.googleapis.com/`)
-
-## Local setup
-
-1. Copy the example environment file and adjust values if needed:
-
-```bash
-copy .env.example .env
-```
-
-2. Install dependencies:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-3. Run the startup smoke check:
-
-```bash
-python smoke_test.py
-```
-
-4. Start the server:
-
-```bash
-python server.py
-```
-
-Or with uv:
-
+### 1. Sync Dependencies
 ```bash
 uv sync
-uv run server.py
 ```
 
-## Health checks and access URLs
-
-After startup, verify the following endpoints:
-
-- Health: `http://localhost:4208/health`
-- MCP endpoint: `http://localhost:4208/mcp`
-
-The server should respond with a JSON payload including the service name, status, and transport information.
-
-## Docker
-
+### 2. Run via Justfile Recipes
 ```bash
-docker build -t suntory-gcp-productivity-bqclient-mcp .
-docker run --rm -p 4208:4208 \
-  -e MCP_HOST=0.0.0.0 \
-  -e MCP_PORT=4208 \
-  -e SERVICE_ACCOUNT_FILE=/app/credentials.json \
-  -v $(pwd)/credentials.json:/app/credentials.json:ro \
-  suntory-gcp-productivity-bqclient-mcp
+# Run locally using stdio transport
+just run-bigquery-sgs-stdio
+
+# Run locally using SSE transport on port 8040
+just run-bigquery-sgs-sse 8040
 ```
 
-## Authentication model
+### 3. Run Directly with UV CLI
+```bash
+# Run on SSE
+uv run --package sgs-bq-server sgs-bq-server --transport sse --port 8040
 
-This variant loads the service account JSON file and creates JWT-based BigQuery credentials through the Google auth helper library. It is useful when you want the same tool surface as the API variant but through the official client SDK. The authentication material is loaded from the service account file and environment variables rather than being embedded in code.
+# Run on stdio
+uv run --package sgs-bq-server sgs-bq-server --transport stdio
+```
 
-## Saved query / query management strategy
+## Running with Docker & Docker Compose
 
-To keep repeated analytics work manageable:
+### Using Docker Compose (Monorepo)
+```bash
+just docker-up
+```
 
-- Store reusable SQL in a separate `queries/` folder or a management table if you later evolve this into a multi-user service.
-- Keep a small catalog of common query templates such as spend by company, vendor concentration, and savings opportunities.
-- Externalize the most important filters (company code, purchasing org, date range) as tool parameters rather than embedding them in hard-coded SQL.
-- When moving to production, prefer a persisted saved-query registry or a versioned SQL template repository.
+### Using Container Run Script
+```bash
+./servers/sgs_bq_server/container_run.sh
+```
 
-## End-to-end startup order
+## Available Tools
 
-1. Ensure the service account JSON file exists and is referenced by `SERVICE_ACCOUNT_FILE` or `GOOGLE_APPLICATION_CREDENTIALS`.
-2. Start the server with the environment file or exported variables.
-3. Confirm the health endpoint responds on `/health`.
-4. Verify the MCP endpoint is reachable at `/mcp`.
-5. Connect an MCP client and call a tool such as `Gold_Enterprise_Spend_Fact(limit=5, company_code="1000")`.
-
-## Example tools
-
-The server exposes tools such as:
-
-- `Gold_Account_Assignment_Fact`
-- `Gold_Content_Brand_Investment`
-- `Gold_Cost_Center_Intelligence`
-- `Gold_Enterprise_Spend_Fact`
-- `Gold_Executive_Dashboard`
-- `Gold_Financial_Attribution`
-- `Gold_GL_Account_Intelligence`
-- `Gold_Invoice_Fact`
-- `Gold_Material_Intelligence`
-- `Gold_Monthly_Spend_Trend`
-- `Gold_Procurement_KPI`
-- `Gold_Savings_Opportunity`
-- `Gold_Shadow_IT`
-- `Gold_Supplier_Risk`
-- `Gold_Supply_Chain_Intelligence`
-- `Gold_Vendor_Intelligence`
-- `Gold_Vendor_Similarity`
-- `Gold_Vendor_Spend_Classification`
-
-Example usage from an MCP client can target a tool like `Gold_Enterprise_Spend_Fact(limit=5, company_code="1000")`.
+1. **`Gold_Account_Assignment_Fact`**: Procurement account assignments (cost centers, internal orders, WBS elements, GL accounts).
+2. **`Gold_Content_Brand_Investment`**: Marketing, branding, agency, and media spend data.
+3. **`Gold_Cost_Center_Intelligence`**: Cost-center spend benchmarking and peer comparisons.
+4. **`Gold_Enterprise_Spend_Fact`**: Canonical enterprise spend fact table at spend-line level.
+5. **`Gold_Executive_Dashboard`**: High-level curated KPIs and summary metrics for leadership.
+6. **`Gold_Financial_Attribution`**: Financial ownership after FI/CO reallocations.
+7. **`Gold_GL_Account_Intelligence`**: General Ledger classifications and reporting structures.
+8. **`Gold_Invoice_Fact`**: Canonical invoice-level data linked to POs and vendors.
+9. **`Gold_Material_Intelligence`**: Material-centric procurement intelligence.
+10. **`Gold_Monthly_Spend_Trend`**: Pre-aggregated monthly spend trends.
+11. **`Gold_Procurement_KPI`**: Key procurement KPIs and operational metrics.
+12. **`Gold_Savings_Opportunity`**: Algorithmic savings opportunities and recommendations.
+13. **`Gold_Shadow_IT`**: Detects software/hardware purchases made outside central IT governance.
+14. **`Gold_Supplier_Risk`**: Supplier concentration and dependency risk scores.
+15. **`Gold_Supply_Chain_Intelligence`**: Logistics, warehousing, packaging, and supply chain spend.
+16. **`Gold_Vendor_Intelligence`**: Supplier classifications (technology, consulting, agency, HR, etc.).
+17. **`Gold_Vendor_Similarity`**: Identifies suppliers providing overlapping capabilities for rationalization.
+18. **`Gold_Vendor_Spend_Classification`**: Supplier business capabilities and classification confidence.

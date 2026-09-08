@@ -27,6 +27,21 @@ services:
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
 
+  sgs-bq-server:
+    build:
+      context: .
+      dockerfile: servers/sgs_bq_server/Dockerfile
+    ports:
+      - "${SGS_BQ_SERVER_PORT:-8040}:8080" # Maps local port 8040 to container port 8080
+    environment:
+      - PORT=8080
+      - BIGQUERY_PROJECT_ID=${BIGQUERY_PROJECT_ID:-bsi-sftphub-dev}
+      - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+      - SERVICE_ACCOUNT_FILE=/app/servers/sgs_bq_server/credentials.json
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ./servers/sgs_bq_server/credentials.json:/app/servers/sgs_bq_server/credentials.json:ro
+
   registry-gateway:
     build:
       context: .
@@ -37,6 +52,8 @@ services:
       - PORT=8080
       - SERVER_RAG_SERVER_URL=${SERVER_RAG_SERVER_URL:-http://rag-server:8080/sse}
       - SERVER_BIGQUERY_SERVER_URL=${SERVER_BIGQUERY_SERVER_URL:-http://bigquery-server:8080/sse}
+      - SERVER_SGS_BQ_SERVER_URL=${SERVER_SGS_BQ_SERVER_URL:-http://sgs-bq-server:8080/sse}
     depends_on:
       - rag-server
       - bigquery-server
+      - sgs-bq-server

@@ -1,19 +1,14 @@
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT))
-
-import server  # noqa: E402
+import pytest
+from sgs_bq_server.main import startup_smoke_check, _health_payload
 
 
-def main() -> None:
-    server.startup_smoke_check()
-    payload = server._health_payload()
-    assert payload["service"] == "suntory-gcp-productivity-bqclient-mcp"
+def test_smoke_check() -> None:
+    startup_smoke_check()
+    payload = _health_payload()
+    assert payload["service"] == "sgs-bq-server"
     assert payload["status"] == "ok"
-    print("smoke-test-ok")
 
 
 if __name__ == "__main__":
-    main()
+    test_smoke_check()
+    print("smoke-test-ok")
