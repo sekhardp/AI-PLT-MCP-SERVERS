@@ -22,6 +22,14 @@ run-bigquery-stdio:
 run-bigquery-sse port="8030":
     uv run --package bigQuery-server bigQuery-server --transport sse --port {{port}}
 
+# Run the SGS BigQuery Server productivity locally using stdio transport
+run-bigquery-sgs-stdio:
+    uv run --package sgs-bq-server sgs-bq-server --transport stdio
+
+# Run the SGS BigQuery Server for productivity locally using SSE transport on a specific port
+run-bigquery-sgs-sse port="8040":
+    uv run --package sgs-bq-server sgs-bq-server --transport sse --port {{port}}
+
 # Run the Registry Gateway locally using stdio transport
 run-gateway-stdio:
     uv run --package registry-gateway registry-gateway --transport stdio

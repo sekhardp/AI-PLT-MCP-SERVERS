@@ -1,0 +1,20 @@
+[project]
+name = "sgs-productivity-server"
+version = "0.1.0"
+description = "MCP BigQuery Server with SSE transport inside Dockert"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "fastmcp>=3.0.0",
+    "google-cloud-bigquery>=3.0.0",
+    "google-auth>=2.0.0",
+    "uvicorn>=0.20.0"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+sgs-bg-server = "sgs_bq_server.main:main"
