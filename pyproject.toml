@@ -1,13 +1,14 @@
 [project]
 name = "ai-plt-mcp-servers"
 version = "0.1.0"
-description = "AI Platform MCP Servers (RAG Knowledge Base & BigQuery)"
+description = "AI Platform MCP Servers (RAG Knowledge Base, BigQuery & PPT Generator)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "rag-server",
     "bigQuery-server",
     "sgs-bq-server",
+    "ppt-server",
     "registry-gateway",
 ]
 
@@ -25,12 +26,13 @@ dev = [
 rag-server = { workspace = true }
 bigQuery-server = { workspace = true }
 sgs-bq-server = { workspace = true }
+ppt-server = { workspace = true }
 registry-gateway = { workspace = true }
 
 [tool.uv]
 workspace = { members = ["registry", "servers/*"]}
 
 [tool.pytest.ini_options]
-pythonpath = ["servers/rag_server/src", "servers/bigQuery_server/src", "servers/sgs_bq_server/src", "registry/src"]
+pythonpath = ["servers/rag_server/src", "servers/bigQuery_server/src", "servers/sgs_bq_server/src", "servers/ppt_server/src", "registry/src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

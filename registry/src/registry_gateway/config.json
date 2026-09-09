@@ -11,6 +11,10 @@
         {
             "name": "sgs-bq-server",
             "url": "http://localhost:8040/sse"
+        },
+        {
+            "name": "ppt-server",
+            "url": "http://localhost:8050/sse"
         }
     ]
 }

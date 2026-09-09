@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# GCP & Service Account Credentials / Secrets
+credentials.json
+*credentials*.json
+service_account*.json
+*.pem
+*.key
+secrets/

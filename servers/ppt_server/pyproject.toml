@@ -1,0 +1,21 @@
+[project]
+name = "ppt-server"
+version = "0.1.0"
+description = "MCP Presentation Server for compiling and generating native 16:9 widescreen PowerPoint presentations"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "fastmcp>=0.1.0",
+    "python-pptx>=1.0.2",
+    "pydantic>=2.0.0",
+    "starlette>=0.20.0",
+    "uvicorn>=0.20.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+ppt-server = "ppt_server.main:main"

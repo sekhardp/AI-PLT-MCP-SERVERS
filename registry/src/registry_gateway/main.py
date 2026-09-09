@@ -19,10 +19,26 @@ from mcp.server.sse import SseServerTransport
 from mcp.server.stdio import stdio_server
 from mcp.client.sse import sse_client
 from mcp.client.session import ClientSession
+from mcp.shared._httpx_utils import create_mcp_http_client
 
 # 1. Initialize Logging
 logger = logging.getLogger("registry-gateway")
 logging.basicConfig(level=logging.INFO)
+
+
+def _create_mcp_http_client(**kwargs) -> Any:
+    """Create MCP-compatible AsyncClient that forces HTTPS on redirects for cloud-hosted services."""
+    async def force_https_redirect_hook(request: Any) -> None:
+        if request.url.scheme == "http" and request.url.host not in ("localhost", "127.0.0.1"):
+            request.url = request.url.copy_with(scheme="https")
+
+    client = create_mcp_http_client(
+        headers=kwargs.get("headers"),
+        timeout=kwargs.get("timeout") or 60.0,
+        auth=kwargs.get("auth"),
+    )
+    client.event_hooks["request"].append(force_https_redirect_hook)
+    return client
 
 # Config path resolver (configurable via env var)
 CONFIG_PATH = os.environ.get("REGISTRY_CONFIG_PATH", os.path.join(os.path.dirname(__file__), "config.json"))
@@ -83,7 +99,7 @@ async def handle_list_tools() -> types.ListToolsResult:
         logger.info(f"Fetching tools from '{name}' at {url}...")
         try:
             # Dynamically connect to the sub-server using the SSE client
-            async with sse_client(url=url) as (read_stream, write_stream):
+            async with sse_client(url=url, httpx_client_factory=_create_mcp_http_client) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     tools_result = await session.list_tools()
@@ -142,7 +158,7 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any] | None) -> types
     
     try:
         # Establish connection to the target server and invoke the tool
-        async with sse_client(url=url) as (read_stream, write_stream):
+        async with sse_client(url=url, httpx_client_factory=_create_mcp_http_client) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 result = await session.call_tool(original_tool_name, arguments or {})
@@ -228,7 +244,7 @@ async def get_tools(tag: Optional[str] = None):
         name = srv["name"]
         url = srv["url"]
         try:
-            async with sse_client(url=url) as (read_stream, write_stream):
+            async with sse_client(url=url, httpx_client_factory=_create_mcp_http_client) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     tools_result = await session.list_tools()

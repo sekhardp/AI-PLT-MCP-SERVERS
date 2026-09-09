@@ -57,3 +57,15 @@ inspect-bigquery:
 # Launch the official visual MCP Inspector for the BigQuery Server
 inspect-bigquery-sgs:
     uv run --package sgs-bq-server fastmcp dev inspector servers/sgs_bq_server/src/sgs_bq_server/main.py
+
+# Run the PPT Server locally using stdio transport
+run-ppt-stdio:
+    uv run --package ppt-server ppt-server --transport stdio
+
+# Run the PPT Server locally using SSE transport on a specific port
+run-ppt-sse port="8050":
+    uv run --package ppt-server ppt-server --transport sse --port {{port}}
+
+# Launch the official visual MCP Inspector for the PPT Server
+inspect-ppt:
+    uv run --package ppt-server fastmcp dev inspector servers/ppt_server/src/ppt_server/main.py
