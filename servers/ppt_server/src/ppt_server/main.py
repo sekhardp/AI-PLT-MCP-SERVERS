@@ -5,7 +5,7 @@ import base64
 import json
 import logging
 import os
-from typing import Any
+from typing import Any, Optional, Union
 
 from fastmcp import FastMCP
 from ppt_server.builder import PPTXBuilder, SlideDeck
@@ -23,15 +23,45 @@ TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio")
 
 @mcp.tool(
     name="compile_deck_to_pptx_base64",
-    description="Compiles a structured SlideDeck JSON schema into a base64-encoded 16:9 widescreen PowerPoint (.pptx) presentation with native charts, KPI cards, and custom themes.",
+    description="Compiles a structured SlideDeck JSON schema into a base64-encoded 16:9 widescreen PowerPoint (.pptx) presentation with native charts, KPI cards, and custom themes. Accepts either deck_json (string or dict) or direct slides list.",
 )
-def compile_deck_to_pptx_base64(deck_json: str) -> dict[str, Any]:
+def compile_deck_to_pptx_base64(
+    deck_json: Optional[Union[str, dict[str, Any]]] = None,
+    slides: Optional[list[dict[str, Any]]] = None,
+    deck_title: Optional[str] = None,
+    deck_subtitle: Optional[str] = None,
+    theme: Optional[str] = "dark",
+    author: Optional[str] = None,
+) -> dict[str, Any]:
     """Compiles SlideDeck JSON into a base64-encoded .pptx file."""
     try:
-        data = json.loads(deck_json) if isinstance(deck_json, str) else deck_json
-        deck = SlideDeck.model_validate(data)
+        if deck_json is not None:
+            if isinstance(deck_json, str):
+                try:
+                    raw_data = json.loads(deck_json)
+                except Exception:
+                    raw_data = {"deck_title": deck_title or "Executive Presentation", "slides": []}
+            else:
+                raw_data = dict(deck_json)
+        elif slides is not None:
+            raw_data = {
+                "deck_title": deck_title or "Executive Presentation",
+                "deck_subtitle": deck_subtitle,
+                "slides": slides,
+                "theme": theme or "dark",
+                "author": author or "AI Platform Orchestrator",
+            }
+        else:
+            raw_data = {
+                "deck_title": deck_title or "Executive Presentation",
+                "deck_subtitle": deck_subtitle,
+                "slides": [],
+                "theme": theme or "dark",
+            }
+
+        deck = SlideDeck.model_validate(raw_data)
     except Exception as e:
-        logger.error(f"Invalid slide deck JSON: {e}")
+        logger.error("invalid_slide_deck_json", error=str(e))
         return {
             "error": f"Invalid SlideDeck schema: {e}",
             "status": "failed",
@@ -59,11 +89,18 @@ def compile_deck_to_pptx_base64(deck_json: str) -> dict[str, Any]:
     name="validate_presentation_schema",
     description="Validates that a JSON payload adheres to the required SlideDeck schema for PPTX compilation.",
 )
-def validate_presentation_schema(deck_json: str) -> dict[str, Any]:
+def validate_presentation_schema(
+    deck_json: Optional[Union[str, dict[str, Any]]] = None,
+    slides: Optional[list[dict[str, Any]]] = None,
+    deck_title: Optional[str] = None,
+) -> dict[str, Any]:
     """Validates SlideDeck JSON structure."""
     try:
-        data = json.loads(deck_json) if isinstance(deck_json, str) else deck_json
-        deck = SlideDeck.model_validate(data)
+        if deck_json is not None:
+            raw_data = json.loads(deck_json) if isinstance(deck_json, str) else deck_json
+        else:
+            raw_data = {"deck_title": deck_title or "Executive Presentation", "slides": slides or []}
+        deck = SlideDeck.model_validate(raw_data)
         return {
             "valid": True,
             "deck_title": deck.deck_title,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Union
 
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData
@@ -11,7 +11,7 @@ from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class KPICard(BaseModel):
@@ -20,26 +20,77 @@ class KPICard(BaseModel):
     change: str | None = Field(None, description="Delta (e.g. '+14.2% YoY')")
     trend: Literal["up", "down", "neutral"] | None = Field("up", description="Trend direction")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_kpi(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Map alternative keys
+            label = data.get("label") or data.get("title") or data.get("name") or "Metric"
+            value = str(data.get("value") or data.get("val") or data.get("metric") or "0")
+            change = data.get("change") or data.get("delta") or data.get("delta_yoy") or data.get("delta_qoq")
+            trend = data.get("trend")
+            if not trend and change:
+                trend = "down" if "-" in str(change) else "up"
+            return {
+                "label": str(label),
+                "value": value,
+                "change": str(change) if change is not None else None,
+                "trend": trend or "up",
+            }
+        return data
+
 
 class ChartSeries(BaseModel):
-    name: str
-    values: list[float | int]
+    name: str = "Series"
+    values: list[float | int] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_series(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            name = data.get("name") or data.get("label") or "Series"
+            raw_vals = data.get("values") or data.get("data") or []
+            values = []
+            for v in raw_vals:
+                try:
+                    values.append(float(v))
+                except (ValueError, TypeError):
+                    values.append(0.0)
+            return {"name": str(name), "values": values}
+        return data
 
 
 class ChartConfig(BaseModel):
     chart_type: Literal["bar", "horizontal_bar", "line", "pie", "doughnut"] = "bar"
     title: str | None = None
-    categories: list[str]
-    series: list[ChartSeries]
+    categories: list[str] = Field(default_factory=list)
+    series: list[ChartSeries] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_chart(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            c_type = data.get("chart_type") or data.get("type") or "bar"
+            if c_type not in ("bar", "horizontal_bar", "line", "pie", "doughnut"):
+                c_type = "bar"
+            categories = [str(c) for c in (data.get("categories") or data.get("labels") or [])]
+            raw_series = data.get("series") or []
+            return {
+                "chart_type": c_type,
+                "title": data.get("title"),
+                "categories": categories,
+                "series": raw_series,
+            }
+        return data
 
 
 class TableConfig(BaseModel):
-    headers: list[str]
-    rows: list[list[str]]
+    headers: list[str] = Field(default_factory=list)
+    rows: list[list[str]] = Field(default_factory=list)
 
 
 class Slide(BaseModel):
-    slide_number: int
+    slide_number: int = 1
     layout: Literal[
         "title_slide",
         "kpi_grid",
@@ -47,8 +98,8 @@ class Slide(BaseModel):
         "two_column_comparison",
         "table_slide",
         "bullet_cards",
-    ]
-    title: str
+    ] = "bullet_cards"
+    title: str = "Executive Briefing"
     subtitle: str | None = None
     bullet_points: list[str] = Field(default_factory=list)
     kpi_cards: list[KPICard] = Field(default_factory=list)
@@ -60,14 +111,150 @@ class Slide(BaseModel):
     right_column_bullets: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_slide(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        # Normalize layout
+        layout = data.get("layout") or "bullet_cards"
+        if layout not in (
+            "title_slide",
+            "kpi_grid",
+            "chart_and_bullets",
+            "two_column_comparison",
+            "table_slide",
+            "bullet_cards",
+        ):
+            layout = "bullet_cards"
+
+        # Normalize title & subtitle
+        title = data.get("title") or data.get("header") or data.get("name") or "Executive Summary"
+        subtitle = data.get("subtitle") or data.get("description")
+
+        # Normalize bullet_points from bullets, takeaways, or cards
+        bullets = []
+        raw_bullets = (
+            data.get("bullet_points")
+            or data.get("bullets")
+            or data.get("takeaways")
+            or data.get("points")
+            or []
+        )
+        for b in raw_bullets:
+            if isinstance(b, dict):
+                bullets.append(str(b.get("content") or b.get("text") or b.get("title") or ""))
+            else:
+                bullets.append(str(b))
+
+        # If bullet_cards has cards array [{"title": "...", "content": "..."}]
+        if data.get("cards") and isinstance(data["cards"], list):
+            for c in data["cards"]:
+                if isinstance(c, dict):
+                    title_part = f"{c.get('title')}: " if c.get("title") else ""
+                    bullets.append(f"{title_part}{c.get('content') or c.get('text') or ''}".strip())
+                else:
+                    bullets.append(str(c))
+
+        # Normalize two_column_comparison if passed as dicts
+        left_title = data.get("left_column_title")
+        left_bullets = data.get("left_column_bullets") or []
+        if data.get("left_column") and isinstance(data["left_column"], dict):
+            left_title = data["left_column"].get("title") or left_title
+            raw_content = data["left_column"].get("content") or ""
+            if isinstance(raw_content, str):
+                left_bullets = [
+                    item.strip()
+                    for item in raw_content.replace("<br>", "\n").replace("<br/>", "\n").split("\n")
+                    if item.strip()
+                ]
+            elif isinstance(raw_content, list):
+                left_bullets = [str(x) for x in raw_content]
+
+        right_title = data.get("right_column_title")
+        right_bullets = data.get("right_column_bullets") or []
+        if data.get("right_column") and isinstance(data["right_column"], dict):
+            right_title = data["right_column"].get("title") or right_title
+            raw_content = data["right_column"].get("content") or ""
+            if isinstance(raw_content, str):
+                right_bullets = [
+                    item.strip()
+                    for item in raw_content.replace("<br>", "\n").replace("<br/>", "\n").split("\n")
+                    if item.strip()
+                ]
+            elif isinstance(raw_content, list):
+                right_bullets = [str(x) for x in raw_content]
+
+        # Normalize sources
+        sources = []
+        raw_sources = data.get("sources") or data.get("source") or []
+        if isinstance(raw_sources, str):
+            sources = [raw_sources]
+        elif isinstance(raw_sources, list):
+            for s in raw_sources:
+                if isinstance(s, str):
+                    sources.append(s)
+                elif isinstance(s, list):
+                    sources.extend([str(x) for x in s])
+
+        return {
+            "slide_number": int(data.get("slide_number") or 1),
+            "layout": layout,
+            "title": str(title),
+            "subtitle": str(subtitle) if subtitle else None,
+            "bullet_points": bullets,
+            "kpi_cards": data.get("kpi_cards") or data.get("kpis") or [],
+            "chart": data.get("chart"),
+            "table": data.get("table"),
+            "left_column_title": left_title,
+            "left_column_bullets": left_bullets,
+            "right_column_title": right_title,
+            "right_column_bullets": right_bullets,
+            "sources": sources,
+        }
+
 
 class SlideDeck(BaseModel):
-    deck_title: str
+    deck_title: str = "Executive Presentation"
     deck_subtitle: str | None = None
     theme: Literal["dark", "light", "midnight", "navy", "emerald"] = "dark"
     author: str | None = "AI Platform MCP Server"
-    slides: list[Slide]
+    slides: list[Slide] = Field(default_factory=list)
     sources_summary: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_deck(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        deck_title = (
+            data.get("deck_title")
+            or data.get("title")
+            or data.get("presentation_title")
+            or "Executive Presentation"
+        )
+        deck_subtitle = data.get("deck_subtitle") or data.get("subtitle")
+        theme = data.get("theme") or "dark"
+        if theme not in ("dark", "light", "midnight", "navy", "emerald"):
+            theme = "dark"
+
+        raw_slides = data.get("slides") or []
+        # If the first slide is a title slide and deck_title was default, adopt slide 1's title
+        if raw_slides and isinstance(raw_slides[0], dict) and deck_title == "Executive Presentation":
+            first_t = raw_slides[0].get("title")
+            if first_t:
+                deck_title = first_t
+
+        return {
+            "deck_title": str(deck_title),
+            "deck_subtitle": str(deck_subtitle) if deck_subtitle else None,
+            "theme": theme,
+            "author": data.get("author") or "AI Platform Orchestrator",
+            "slides": raw_slides,
+            "sources_summary": data.get("sources_summary") or [],
+        }
 
 
 @dataclass(frozen=True)
@@ -275,8 +462,8 @@ class PPTXBuilder:
                 slide_obj,
                 slide.left_column_title,
                 slide.left_column_bullets,
-                slide.right_column_title,
-                slide.right_column_bullets,
+                right_title=slide.right_column_title,
+                right_bullets=slide.right_column_bullets,
             )
         elif slide.layout == "table_slide":
             self._render_table_slide(slide_obj, slide.table, slide.bullet_points)
