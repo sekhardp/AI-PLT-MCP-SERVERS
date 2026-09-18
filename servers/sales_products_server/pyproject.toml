@@ -1,15 +1,16 @@
 [project]
-name = "sgs-bq-server"
+name = "sales-products-server"
 version = "0.1.0"
-description = "MCP BigQuery Server for Suntory GCP Procurement and Productivity Analytics"
+description = "Sales & Products BigQuery MCP Analytics Server for beam-suntory-gemini-llm-poc"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "mcp[cli]>=1.0.0",
     "fastmcp>=0.1.0",
-    "fastmcp-docs",
-    "google-cloud-bigquery>=3.0.0",
+    "fastmcp-docs>=0.1.0",
+    "google-cloud-bigquery>=3.25.0",
     "google-auth>=2.0.0",
+    "pydantic>=2.0.0",
     "starlette>=0.20.0",
     "uvicorn>=0.20.0",
 ]
@@ -19,4 +20,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.scripts]
-sgs-bq-server = "sgs_bq_server.main:main"
+sales-products-server = "sales_products_server.main:main"

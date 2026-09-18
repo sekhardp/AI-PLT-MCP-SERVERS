@@ -1,12 +1,11 @@
 import pytest
-from sgs_bq_server.main import startup_smoke_check, _health_payload
+from sales_products_server.main import get_dataset_metadata
 
 
 def test_smoke_check() -> None:
-    startup_smoke_check()
-    payload = _health_payload()
-    assert payload["service"] == "sgs-bq-server"
-    assert payload["status"] == "ok"
+    meta = get_dataset_metadata()
+    assert meta["dataset_id"] == "sales_products"
+    assert len(meta["tables"]) == 5
 
 
 if __name__ == "__main__":

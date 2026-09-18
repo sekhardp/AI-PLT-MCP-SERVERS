@@ -9,10 +9,10 @@ ENV UV_COMPILE_BYTECODE=1
 
 # Copy root lockfile and workspace configurations
 COPY pyproject.toml uv.lock ./
-COPY servers/sgs_bq_server ./servers/sgs_bq_server
+COPY servers/sales_products_server ./servers/sales_products_server
 
-# Install only the sgs-bq-server package statically in the virtualenv
-RUN uv sync --frozen --no-dev --package sgs-bq-server --no-editable
+# Install only the sales-products-server package statically in the virtualenv
+RUN uv sync --frozen --no-dev --package sales-products-server --no-editable
 
 # 2. Production Stage: Create a clean runner image using the exact same base
 FROM python:3.12-slim
@@ -33,4 +33,4 @@ ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8080
 
 # Execute server using the dynamic PORT env var (required by Cloud Run & Docker)
-CMD ["sh", "-c", "sgs-bq-server --transport sse --port ${PORT:-8080}"]
+CMD ["sh", "-c", "sales-products-server --transport sse --port ${PORT:-8080}"]
