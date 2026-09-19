@@ -338,7 +338,7 @@ def _normalize_table_name(name: str | None) -> str | None:
 
 @mcp.tool(
     name="get_dataset_metadata",
-    description="Returns the authoritative schemas, column descriptions, record counts, and cross-table join relationships for tables in the sales_products BigQuery dataset.",
+    description="PRIMARY TOOL to inspect schemas, column descriptions, record counts, and cross-table join relationships for all tables in the sales_products BigQuery dataset.",
 )
 def get_dataset_metadata(
     table_name: str | None = None,
@@ -360,7 +360,7 @@ def get_dataset_metadata(
 
 @mcp.tool(
     name="get_dimension_catalog",
-    description="Returns the exact distinct values for any categorical dimension. Valid dimensions: 'products', 'regions', 'store_locations', 'store_ids', 'order_statuses', 'payment_methods', 'storage_locations', 'customer_types', 'promotions'. Defaults to 'products'.",
+    description="PRIMARY TOOL for listing exact distinct values of any categorical dimension: products list ('products'), territories ('regions'), physical branches ('store_locations'), store IDs ('store_ids'), fulfillment statuses ('order_statuses'), payment methods ('payment_methods'), warehouses ('storage_locations'), customer account types ('customer_types'), promotion campaigns ('promotions'). Defaults to 'products'.",
 )
 def get_dimension_catalog(
     dimension: str = "products",
@@ -464,7 +464,7 @@ def get_dimension_catalog(
 
 @mcp.tool(
     name="get_customer_purchases",
-    description="Query customer purchase history with parameterized filters for customer ID, product, category, payment method, rating, and dates.",
+    description="PRIMARY TOOL to query customer purchase history with parameterized filters for customer ID, product, category, payment method, rating (1-5), and dates. Automatically computes total units, total revenue, and average price.",
 )
 def get_customer_purchases(
     customer_id: str | None = None,
@@ -552,7 +552,7 @@ def get_customer_purchases(
 
 @mcp.tool(
     name="get_inventory_status",
-    description="Query warehouse inventory stock levels, unit costs, lead times, and restock thresholds with stock health filtering.",
+    description="PRIMARY TOOL to query warehouse inventory stock levels, unit costs, lead times, and restock thresholds with stock health filtering ('all', 'low_stock', 'out_of_stock', 'healthy').",
 )
 def get_inventory_status(
     product_name: str | None = None,
@@ -629,7 +629,7 @@ def get_inventory_status(
 
 @mcp.tool(
     name="get_online_orders",
-    description="Query e-commerce online store orders with filters for order status (Delivered, Shipped, Pending, Returned, Cancelled), coupon code, product, customer, and date.",
+    description="PRIMARY TOOL to query e-commerce online store orders with filters for order status ('Delivered', 'Shipped', 'Pending', 'Returned', 'Cancelled'), coupon codes ('SAVE10', 'FREESHIP'), product, customer, and date.",
 )
 def get_online_orders(
     order_id: str | None = None,
@@ -711,7 +711,7 @@ def get_online_orders(
 
 @mcp.tool(
     name="get_regional_sales",
-    description="Query regional sales performance across geographic regions (Central, East, North, South, West), customer types (Retail, Wholesale), salesperson, discounts, and return flags.",
+    description="PRIMARY TOOL to query regional sales performance across territories ('Central', 'East', 'North', 'South', 'West'), account types ('Retail', 'Wholesale'), sales reps, discounts, and return flags.",
 )
 def get_regional_sales(
     region: str | None = None,
@@ -804,7 +804,7 @@ def get_regional_sales(
 
 @mcp.tool(
     name="get_retail_transactions",
-    description="Query physical retail store point-of-sale (POS) transactions by store ID (S1-S10), location (Store A-D), product, cashier, manager, time of day, day of week, and payment type.",
+    description="PRIMARY TOOL to query physical store POS transactions by store ID ('S1' to 'S10'), store branch ('Store A' to 'Store D'), cashier, manager, shift ('Morning', 'Afternoon', 'Evening'), day of week, and payment type ('Cash', 'Credit Card', 'Gift Card').",
 )
 def get_retail_transactions(
     store_id: str | None = None,
@@ -903,7 +903,7 @@ def get_retail_transactions(
 
 @mcp.tool(
     name="get_executive_sales_summary",
-    description="Calculates enterprise-wide aggregated executive KPIs across online store, retail stores, and regional sales channels (total gross revenue, channel revenue mix, units sold, return rates, and top products).",
+    description="PRIMARY TOOL for total sales revenue across all channels, total enterprise revenue, channel revenue mix (online vs retail vs regional), top-selling products ranking, and #1 best seller product by revenue. ALWAYS call this tool for total revenue and top products questions.",
 )
 def get_executive_sales_summary(
     product: str | None = None,
@@ -1007,7 +1007,7 @@ def get_executive_sales_summary(
 
 @mcp.tool(
     name="get_omnichannel_comparison",
-    description="Compares product performance side-by-side between Online E-Commerce Store and Physical Retail Stores (volume, revenue, unit prices).",
+    description="PRIMARY TOOL for comparing product performance and identifying #1 best seller product by revenue or volume side-by-side between Online Store Orders and Physical Retail Stores.",
 )
 def get_omnichannel_comparison(
     product: str | None = None,
@@ -1073,7 +1073,7 @@ def get_omnichannel_comparison(
 
 @mcp.tool(
     name="get_inventory_restock_alerts",
-    description="Identifies all SKUs currently at or below their reorder threshold, calculates supply deficits, lead time risk, and restock purchase cost estimates.",
+    description="PRIMARY TOOL for supply chain deficits, restock alerts, out-of-stock items, and inventory reorder priorities. Identifies all SKUs at or below their reorder threshold with estimated restock costs.",
 )
 def get_inventory_restock_alerts(
     storage_location: str | None = None,
@@ -1104,7 +1104,7 @@ def get_inventory_restock_alerts(
         filters.append("lower(Supplier) LIKE @supp")
         params.append(("supp", "STRING", f"%{supp.lower()}%"))
     if prod:
-        filters.append("lower(ProductName) LIKE @prod")
+        filters.append(("lower(ProductName) LIKE @prod"))
         params.append(("prod", "STRING", f"%{prod.lower()}%"))
 
     where_clause = " WHERE " + " AND ".join(filters)
@@ -1144,9 +1144,82 @@ def get_inventory_restock_alerts(
 # Safe SQL Runner with Guardrails
 # ==============================================================================
 
+_SQL_TABLE_ALIAS_MAP: dict[str, str] = {
+    "customer-purchase-history": "customer-purchase-history",
+    "customer_purchase_history": "customer-purchase-history",
+    "customer_purchases": "customer-purchase-history",
+    "customer_history": "customer-purchase-history",
+    "customer_orders": "customer-purchase-history",
+    "purchases": "customer-purchase-history",
+    "customers": "customer-purchase-history",
+    
+    "inventory-tracker": "inventory-tracker",
+    "inventory_tracker": "inventory-tracker",
+    "inventory": "inventory-tracker",
+    "inventory_tracking": "inventory-tracker",
+    "stock": "inventory-tracker",
+    
+    "online-store-orders": "online-store-orders",
+    "online_store_orders": "online-store-orders",
+    "online_orders": "online-store-orders",
+    "online_store": "online-store-orders",
+    "store_orders": "online-store-orders",
+    "online": "online-store-orders",
+    "orders": "online-store-orders",
+    
+    "product-sales-region": "product-sales-region",
+    "product_sales_region": "product-sales-region",
+    "product_sales_regions": "product-sales-region",
+    "regional_sales": "product-sales-region",
+    "sales_region": "product-sales-region",
+    "sales_regions": "product-sales-region",
+    
+    "retail-store-transactions": "retail-store-transactions",
+    "retail_store_transactions": "retail-store-transactions",
+    "retail_transactions": "retail-store-transactions",
+    "retail_store": "retail-store-transactions",
+    "store_transactions": "retail-store-transactions",
+    "retail": "retail-store-transactions",
+    "transactions": "retail-store-transactions",
+}
+
+
+def _rewrite_and_guard_sql(raw_query: str) -> tuple[str | None, str | None]:
+    """Rewrites custom SQL queries safely, auto-resolving table aliases, missing backticks, and column typos."""
+    disallowed = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE", "TRUNCATE", "MERGE", "GRANT", "REVOKE"]
+    cleaned_query = raw_query.strip()
+    upper_query = cleaned_query.upper()
+
+    for word in disallowed:
+        if re.search(rf"\b{word}\b", upper_query):
+            return None, f"Disallowed DDL/DML operation: {word}. Only read-only SELECT queries are permitted."
+
+    # Strip existing backticks to avoid double-escaping
+    q = cleaned_query.replace("`", "")
+
+    # Replace table tokens with temporary placeholders (longest alias first)
+    placeholder_map: dict[str, str] = {}
+    for idx, (alias, real_table) in enumerate(sorted(_SQL_TABLE_ALIAS_MAP.items(), key=lambda x: len(x[0]), reverse=True)):
+        target_token = f"__TBL_{idx}__"
+        pattern = rf"(?i)(?:{re.escape(PROJECT_ID)}\.)?(?:{re.escape(DATASET_ID)}\.)?(?<![a-zA-Z0-9_\-]){re.escape(alias)}(?![a-zA-Z0-9_\-])"
+        if re.search(pattern, q):
+            q = re.sub(pattern, target_token, q)
+            placeholder_map[target_token] = f"`{PROJECT_ID}.{DATASET_ID}.{real_table}`"
+
+    for token, full_table in placeholder_map.items():
+        q = q.replace(token, full_table)
+
+    # Automatically correct common column name hallucinations
+    q = re.sub(r"(?i)\btotal_amount\b", "TotalPrice", q)
+    q = re.sub(r"(?i)\bsales_amount\b", "TotalPrice", q)
+    q = re.sub(r"(?i)\border_amount\b", "TotalPrice", q)
+
+    return q, None
+
+
 @mcp.tool(
     name="execute_custom_analytics_query",
-    description="Executes a safe, read-only analytical SQL query against beam-suntory-gemini-llm-poc.sales_products. Automatically handles backticks for hyphenated table names and prevents mutations.",
+    description="FALLBACK TOOL ONLY: Executes a safe, read-only analytical SQL query against beam-suntory-gemini-llm-poc.sales_products when no specialized tool exists. For total revenue, top products, best sellers, restock alerts, or channel comparisons, ALWAYS use get_executive_sales_summary or get_omnichannel_comparison instead.",
 )
 def execute_custom_analytics_query(
     query: str | None = None,
@@ -1157,7 +1230,7 @@ def execute_custom_analytics_query(
     limit: int | None = None,
     max_results: int | None = None,
 ) -> dict[str, Any]:
-    """Safe read-only BigQuery query runner with automatic quoting of hyphenated tables."""
+    """Safe read-only BigQuery query runner with automatic quoting of hyphenated tables and alias resolution."""
     raw_query = _clean_str(query or sql or sql_query or statement)
     if not raw_query:
         return {
@@ -1166,39 +1239,9 @@ def execute_custom_analytics_query(
         }
 
     eff_max = max_results or limit or max_rows or 100
-
-    # Guard against non-read-only keywords
-    disallowed = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE", "TRUNCATE", "MERGE", "GRANT", "REVOKE"]
-    cleaned_query = raw_query.strip()
-    upper_query = cleaned_query.upper()
-
-    for word in disallowed:
-        if re.search(rf"\b{word}\b", upper_query):
-            return {"status": "error", "error": f"Disallowed DDL/DML operation: {word}. Only read-only SELECT queries are permitted."}
-
-    # Normalize underscore table names to hyphenated
-    replacements = {
-        "customer_purchase_history": "customer-purchase-history",
-        "inventory_tracker": "inventory-tracker",
-        "online_store_orders": "online-store-orders",
-        "product_sales_region": "product-sales-region",
-        "retail_store_transactions": "retail-store-transactions",
-    }
-    formatted_query = cleaned_query
-    for underscore_name, hyphen_name in replacements.items():
-        formatted_query = re.sub(rf"\b{underscore_name}\b", hyphen_name, formatted_query, flags=re.IGNORECASE)
-
-    # Automatically fix missing backticks around hyphenated tables
-    known_tables = [
-        "customer-purchase-history",
-        "inventory-tracker",
-        "online-store-orders",
-        "product-sales-region",
-        "retail-store-transactions",
-    ]
-    for tbl in known_tables:
-        pattern = rf"(?<![`\w]){re.escape(tbl)}(?![`\w])"
-        formatted_query = re.sub(pattern, f"`{PROJECT_ID}.{DATASET_ID}.{tbl}`", formatted_query)
+    formatted_query, error_msg = _rewrite_and_guard_sql(raw_query)
+    if error_msg:
+        return {"status": "error", "error": error_msg}
 
     try:
         client = get_bigquery_client()
