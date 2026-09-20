@@ -5,35 +5,25 @@ from sales_products_server.main import (
     mcp,
     get_dataset_metadata,
     get_dimension_catalog,
-    _build_filtered_query,
-    execute_custom_analytics_query,
-    get_customer_purchases,
-    get_inventory_status,
-    get_online_orders,
-    get_regional_sales,
-    get_retail_transactions,
     get_executive_sales_summary,
-    get_omnichannel_comparison,
     get_inventory_restock_alerts,
+    execute_sql_query,
+    execute_custom_analytics_query,
+    _rewrite_and_guard_sql,
 )
 
 
 @pytest.mark.asyncio
 async def test_sales_products_tool_discovery():
-    """Verify that all 11 sales & products analytics tools are registered with FastMCP."""
+    """Verify that the Golden Hybrid sales & products analytics tools are registered with FastMCP."""
     tools = await mcp.list_tools()
     tool_names = [t.name for t in tools]
     expected_tools = [
         "get_dataset_metadata",
         "get_dimension_catalog",
-        "get_customer_purchases",
-        "get_inventory_status",
-        "get_online_orders",
-        "get_regional_sales",
-        "get_retail_transactions",
         "get_executive_sales_summary",
-        "get_omnichannel_comparison",
         "get_inventory_restock_alerts",
+        "execute_sql_query",
         "execute_custom_analytics_query",
     ]
     for expected in expected_tools:
@@ -62,10 +52,11 @@ def test_get_dataset_metadata():
 
 def test_get_dimension_catalog_resilience():
     """Verify default values, synonyms, and error cases for dimension catalog."""
-    # Default (no parameters passed)
+    # Default (no parameters passed) returns all dimensions summary
     res_default = get_dimension_catalog()
     assert res_default["dimension"] == "products"
     assert len(res_default["values"]) > 0
+    assert "all_dimensions_summary" in res_default
 
     # Synonyms
     res_store = get_dimension_catalog(dim="store")
@@ -74,30 +65,41 @@ def test_get_dimension_catalog_resilience():
     res_wh = get_dimension_catalog(category="warehouse")
     assert res_wh["dimension"] == "storage_locations"
 
+    res_supp = get_dimension_catalog(dimension="suppliers")
+    assert res_supp["dimension"] == "suppliers"
+    assert len(res_supp["values"]) > 0
+
     # Unsupported dimension
     res_invalid = get_dimension_catalog("unsupported_dim")
     assert "error" in res_invalid
 
 
-def test_build_filtered_query_construction():
-    """Verify WHERE clause and limit parameter binding."""
-    base_sql = "SELECT * FROM `my_project.sales_products.inventory-tracker`"
-    filters = [
-        ("lower(ProductName)", "LIKE", "phone", "STRING"),
-        ("StorageLocation", "=", "WH-1", "STRING"),
-    ]
-    query, params = _build_filtered_query(base_sql, limit=25, filters=filters, order_by="QuantityInStock ASC")
-    assert "WHERE lower(ProductName) LIKE @f_0 AND StorageLocation = @f_1" in query
-    assert "ORDER BY QuantityInStock ASC" in query
-    assert "LIMIT @limit" in query
-    assert ("f_0", "STRING", "%phone%") in params
-    assert ("f_1", "STRING", "WH-1") in params
-    assert ("limit", "INT64", 25) in params
+def test_rewrite_and_guard_sql():
+    """Verify SQL rewriting, alias resolution, plural fixes, and DDL guards."""
+    # 1. Alias & Hyphen resolution
+    q, err = _rewrite_and_guard_sql("SELECT * FROM online_orders WHERE TotalPrice > 100")
+    assert err is None
+    assert "`beam-suntory-gemini-llm-poc.sales_products.online-store-orders`" in q
+
+    # 2. Plural string correction
+    q2, err2 = _rewrite_and_guard_sql("SELECT * FROM product-sales-region WHERE Product = 'Laptops'")
+    assert err2 is None
+    assert "Product = 'Laptop'" in q2
+
+    # 3. Store location correction
+    q3, err3 = _rewrite_and_guard_sql("SELECT * FROM retail_store_transactions WHERE StoreID = 'C'")
+    assert err3 is None
+    assert "Location = 'Store C'" in q3
+
+    # 4. DDL Guard
+    q_drop, err_drop = _rewrite_and_guard_sql("DROP TABLE `inventory-tracker`")
+    assert q_drop is None
+    assert "Disallowed DDL/DML" in err_drop
 
 
-def test_execute_custom_analytics_query_ddl_guard():
-    """Verify that dangerous DDL/DML statements are blocked."""
-    res = execute_custom_analytics_query("DROP TABLE `beam-suntory-gemini-llm-poc.sales_products.inventory-tracker`")
+def test_execute_sql_query_guards():
+    """Verify that dangerous DDL/DML statements are blocked via the tool."""
+    res = execute_sql_query("DROP TABLE `beam-suntory-gemini-llm-poc.sales_products.inventory-tracker`")
     assert res["status"] == "error"
     assert "Disallowed DDL/DML operation" in res["error"]
 
@@ -106,58 +108,28 @@ def test_execute_custom_analytics_query_ddl_guard():
     assert "Disallowed DDL/DML operation" in res_delete["error"]
 
 
-def test_live_dataset_queries_and_synonyms():
-    """Verify live BigQuery queries and parameter resilience against beam-suntory-gemini-llm-poc."""
+def test_live_dataset_queries():
+    """Verify live BigQuery queries for the Golden Hybrid tools."""
     # 1. Dimension catalog
     products = get_dimension_catalog("products")
     assert "values" in products
     assert len(products["values"]) > 0
 
-    # 2. Executive sales summary with and without product filter
+    # 2. Executive sales summary
     summary = get_executive_sales_summary()
     assert "total_omnichannel_revenue" in summary
+    assert summary["total_omnichannel_revenue"] > 1000000
     assert "online_orders" in summary
-    assert "retail_txns" in summary
+    assert "retail_store_pos" in summary
     assert "product_performance_ranking" in summary
 
-    summary_prod = get_executive_sales_summary(product_name="Phone")
-    assert "product_performance_ranking" in summary_prod
-
-    # 3. Omnichannel comparison with and without product filter
-    omni = get_omnichannel_comparison()
-    assert "comparison" in omni
-    assert len(omni["comparison"]) > 0
-
-    omni_desk = get_omnichannel_comparison(product="Desk")
-    assert len(omni_desk["comparison"]) >= 1
-
-    # 4. Restock alerts with warehouse filter
+    # 3. Restock alerts
     alerts = get_inventory_restock_alerts(warehouse="WH-1", limit=5)
     assert "alert_count" in alerts
     assert "alerts" in alerts
+    assert "total_deficit_units" in alerts
 
-    # 5. Customer purchases with synonyms (product_name, rating, max_results)
-    cust = get_customer_purchases(product_name="Chair", rating=3, max_results=3)
-    assert "records" in cust
-    assert cust["count"] <= 3
-
-    # 6. Inventory status with synonyms (product, warehouse, status)
-    inv = get_inventory_status(product="Laptop", warehouse="WH-1", status="low", max_rows=3)
-    assert "records" in inv
-
-    # 7. Online orders with synonyms (product_name, status, promo_code)
-    orders = get_online_orders(product_name="Phone", status="delivered", promo_code="SAVE10", max_results=3)
-    assert "records" in orders
-
-    # 8. Regional sales with synonyms (region, rep, returned)
-    reg = get_regional_sales(region="central", returned="true", top_n=3)
-    assert "records" in reg
-
-    # 9. Retail transactions with synonyms (store, shift, payment)
-    retail = get_retail_transactions(store="Store A", shift="morning", payment="credit", top_n=3)
-    assert "records" in retail
-
-    # 10. Custom analytics query with underscore table name and 'sql' parameter
-    custom = execute_custom_analytics_query(sql="SELECT OrderID, TotalPrice FROM online_store_orders LIMIT 2")
-    assert custom["status"] == "success"
-    assert len(custom["data"]) == 2
+    # 4. Universal SQL query executor
+    sql_res = execute_sql_query("SELECT Product, SUM(Quantity) as units FROM online_store_orders GROUP BY Product ORDER BY units DESC LIMIT 3")
+    assert sql_res["status"] == "success"
+    assert len(sql_res["data"]) == 3

@@ -50,7 +50,7 @@ def resolve_service_account_path(explicit_path: str | None = None) -> Path | Non
 
 
 def get_bigquery_client() -> bigquery.Client:
-    """Lazily initialize BigQuery client."""
+    """Lazily initialize BigQuery client with service account or ADC."""
     global _client
     if _client is None:
         sa_json = os.getenv("SERVICE_ACCOUNT_JSON") or os.getenv("SERVICE_ACCOUNT_INFO")
@@ -95,36 +95,6 @@ def _execute_query(query: str, parameters: list[tuple[str, str, Any]] | None = N
     return [dict(row) for row in results]
 
 
-def _build_filtered_query(
-    base_sql: str,
-    limit: int = 100,
-    filters: list[tuple[str, str, Any, str]] | None = None,
-    order_by: str | None = None,
-) -> tuple[str, list[tuple[str, str, Any]]]:
-    """Appends WHERE clauses, ORDER BY, and LIMIT safely to a base SQL query."""
-    query = base_sql.rstrip().rstrip(";")
-    clauses: list[str] = []
-    parameters: list[tuple[str, str, Any]] = []
-
-    for idx, (col, op, val, dtype) in enumerate(filters or []):
-        if val is None:
-            continue
-        param_name = f"f_{idx}"
-        norm_val = f"%{val}%" if op.upper() == "LIKE" and isinstance(val, str) else val
-        clauses.append(f"{col} {op} @{param_name}")
-        parameters.append((param_name, dtype, norm_val))
-
-    if clauses:
-        query = f"{query} WHERE {' AND '.join(clauses)}"
-
-    if order_by:
-        query = f"{query} ORDER BY {order_by}"
-
-    query = f"{query} LIMIT @limit"
-    parameters.append(("limit", "INT64", min(limit, 2000)))
-    return query, parameters
-
-
 def _clean_str(val: Any) -> str | None:
     if val is None:
         return None
@@ -163,19 +133,6 @@ def _normalize_product_name(product: str | None) -> str | None:
     return mapping.get(p, product.strip())
 
 
-def _normalize_category(category: str | None) -> str | None:
-    if not category:
-        return None
-    c = str(category).strip().lower()
-    mapping = {
-        "electronics": "Electronics",
-        "electronic": "Electronics",
-        "furniture": "Furniture",
-        "furnitures": "Furniture",
-    }
-    return mapping.get(c, category.strip())
-
-
 @mcp.custom_route("/health", methods=["GET"])
 async def healthcheck(request: Request) -> JSONResponse:
     return JSONResponse({
@@ -188,7 +145,7 @@ async def healthcheck(request: Request) -> JSONResponse:
 
 
 # ==============================================================================
-# Ground Truth & Metadata Tools
+# Ground Truth & Metadata Tool
 # ==============================================================================
 
 _DATASET_METADATA: dict[str, Any] = {
@@ -221,7 +178,7 @@ _DATASET_METADATA: dict[str, Any] = {
                 "ProductName": "STRING - Name of product",
                 "QuantityInStock": "INTEGER - Current units on hand in warehouse",
                 "ReorderPoint": "INTEGER - Inventory threshold level triggering restock",
-                "Supplier": "STRING - Primary vendor/supplier name (e.g. DirectGoods)",
+                "Supplier": "STRING - Primary vendor/supplier name (DirectGoods, Global Parts, SupplyCo, WarePlus)",
                 "SupplierContact": "STRING - Supplier email contact",
                 "LeadTime": "INTEGER - Restock delivery lead time in days",
                 "StorageLocation": "STRING - Warehouse location code (WH-1, WH-2, WH-3, WH-4, WH-5)",
@@ -245,7 +202,7 @@ _DATASET_METADATA: dict[str, Any] = {
                 "PaymentMethod": "STRING - Payment method",
                 "OrderStatus": "STRING - Fulfillment status (Cancelled, Delivered, Pending, Returned, Shipped)",
                 "TrackingNumber": "STRING - Courier package tracking ID",
-                "CouponCode": "STRING - Discount code applied (e.g. SAVE10, FREESHIP, null)",
+                "CouponCode": "STRING - Discount code applied (SAVE10, FREESHIP)",
                 "ReferralSource": "STRING - Acquisition channel (Email, Social, Direct, Organic)",
             },
         },
@@ -271,7 +228,7 @@ _DATASET_METADATA: dict[str, Any] = {
                 "CustomerType": "STRING - Account type (Retail, Wholesale)",
                 "CustomerName": "STRING - Customer name",
                 "PaymentMethod": "STRING - Payment method",
-                "Promotion": "STRING - Campaign tag (e.g. WINTER15, FREESHIP)",
+                "Promotion": "STRING - Campaign tag (WINTER15, FREESHIP, Promo A, Promo B)",
                 "Returned": "INTEGER - Return flag (1 = returned, 0 = kept)",
             },
         },
@@ -284,7 +241,7 @@ _DATASET_METADATA: dict[str, Any] = {
                 "Date": "DATE - Transaction date",
                 "Time": "STRING - Local transaction timestamp (HH:MM)",
                 "TimeOfDay": "STRING - Time classification (Morning, Afternoon, Evening)",
-                "DayOfWeek": "STRING - Day of the week",
+                "DayOfWeek": "STRING - Day of the week (Monday..Sunday)",
                 "StoreID": "STRING - Store branch code (S1 through S10)",
                 "Location": "STRING - Physical store branch (Store A, Store B, Store C, Store D)",
                 "StoreManager": "STRING - Branch manager on duty",
@@ -356,6 +313,10 @@ def get_dataset_metadata(
         }
     return _DATASET_METADATA
 
+
+# ==============================================================================
+# Dimension & Catalog Lookup Tool
+# ==============================================================================
 
 @mcp.tool(
     name="get_dimension_catalog",
@@ -454,394 +415,33 @@ def get_dimension_catalog(
     q = dimension_queries.get(dim_key)
     if not q:
         return {
-            "error": f"Unsupported dimension: '{dim_raw}'. Supported dimensions: {list(dimension_queries.keys())}",
-            "valid_dimensions": list(dimension_queries.keys()),
+            "error": f"Unknown dimension '{dim_raw}'. Supported dimensions: {list(dimension_queries.keys())}",
+            "supported_dimensions": list(dimension_queries.keys()),
         }
+
     rows = _execute_query(q)
+    values = [r["val"] for r in rows if r.get("val") is not None]
     result: dict[str, Any] = {
         "dimension": dim_key,
-        "values": [r["val"] for r in rows if r["val"] is not None],
+        "count": len(values),
+        "values": values,
     }
-    # If called without explicit dimension argument, append omnibus summary so the LLM gets store locations, regions, etc. immediately
+
+    # If called with no arguments, include a summary of all dimensions to prevent extra round trips
     if not has_explicit_dim:
         result["all_dimensions_summary"] = {
+            "products": ["Chair", "Desk", "Laptop", "Monitor", "Phone", "Printer", "Tablet"],
             "store_locations": ["Store A", "Store B", "Store C", "Store D"],
             "regions": ["Central", "East", "North", "South", "West"],
-            "order_statuses": ["Cancelled", "Delivered", "Pending", "Returned", "Shipped"],
-            "payment_methods": ["Cash", "Credit Card", "Debit Card", "Gift Card", "Online"],
             "storage_locations": ["WH-1", "WH-2", "WH-3", "WH-4", "WH-5"],
-            "customer_types": ["Retail", "Wholesale"],
-            "promotions": ["FREESHIP", "SAVE10", "WINTER15"],
+            "suppliers": ["DirectGoods", "Global Parts", "SupplyCo", "WarePlus"],
+            "order_statuses": ["Cancelled", "Delivered", "Pending", "Returned", "Shipped"],
         }
     return result
 
 
 # ==============================================================================
-# Domain-Specific Parameterized Analytical Tools
-# ==============================================================================
-
-@mcp.tool(
-    name="get_customer_purchases",
-    description="Query customer purchase history with filters for customer ID, product, category, payment method, rating (1-5), and dates.",
-)
-def get_customer_purchases(
-    customer_id: str | None = None,
-    product: str | None = None,
-    product_name: str | None = None,
-    category: str | None = None,
-    payment_method: str | None = None,
-    rating: int | None = None,
-    min_rating: int | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    limit: int = 50,
-    max_results: int | None = None,
-) -> dict[str, Any]:
-    """Retrieves customer purchase history with parameterized filtering and summary aggregations."""
-    c_id = _clean_str(customer_id)
-    prod = _normalize_product_name(_clean_str(product or product_name))
-    cat = _normalize_category(_clean_str(category))
-    pay = _clean_str(payment_method)
-    
-    r_val = rating if rating is not None else min_rating
-    if r_val is not None:
-        try:
-            r_val = int(r_val)
-        except (ValueError, TypeError):
-            r_val = None
-
-    d_from = _clean_str(date_from)
-    d_to = _clean_str(date_to)
-    eff_limit = max_results or limit or 50
-
-    base_sql = f"""
-    SELECT CustomerID, CustomerName, Product, ProductCategory, PurchaseDate, Quantity, UnitPrice, TotalPrice, PaymentMethod, ReviewRating
-    FROM `{PROJECT_ID}.{DATASET_ID}.customer-purchase-history`
-    """
-    filters: list[tuple[str, str, Any, str]] = []
-    if c_id:
-        filters.append(("CustomerID", "=", c_id, "STRING"))
-    if prod:
-        filters.append(("lower(Product)", "LIKE", prod.lower(), "STRING"))
-    if cat:
-        filters.append(("lower(ProductCategory)", "LIKE", cat.lower(), "STRING"))
-    if pay:
-        filters.append(("lower(PaymentMethod)", "LIKE", pay.lower(), "STRING"))
-    if r_val is not None:
-        filters.append(("ReviewRating", ">=", r_val, "INT64"))
-    if d_from:
-        filters.append(("PurchaseDate", ">=", d_from, "DATE"))
-    if d_to:
-        filters.append(("PurchaseDate", "<=", d_to, "DATE"))
-
-    query, params = _build_filtered_query(base_sql, limit=eff_limit, filters=filters, order_by="PurchaseDate DESC")
-    rows = _execute_query(query, params)
-    
-    total_qty = sum(r.get("Quantity", 0) for r in rows)
-    total_rev = round(sum(r.get("TotalPrice", 0.0) for r in rows), 2)
-    avg_price = round(sum(r.get("UnitPrice", 0.0) for r in rows) / max(len(rows), 1), 2) if rows else 0.0
-    
-    return {
-        "count": len(rows),
-        "total_quantity_sum": total_qty,
-        "total_revenue_usd": total_rev,
-        "average_unit_price": avg_price,
-        "records": rows,
-    }
-
-
-@mcp.tool(
-    name="get_inventory_status",
-    description="Query warehouse inventory stock levels, unit costs, lead times, and restock thresholds with stock health filtering ('all', 'low_stock', 'out_of_stock', 'healthy').",
-)
-def get_inventory_status(
-    product: str | None = None,
-    warehouse: str | None = None,
-    supplier: str | None = None,
-    status: str = "all",
-    limit: int = 50,
-    max_rows: int | None = None,
-) -> dict[str, Any]:
-    """Retrieves inventory levels and health status."""
-    prod = _normalize_product_name(_clean_str(product))
-    wh = _clean_str(warehouse)
-    supp = _clean_str(supplier)
-    raw_status = (status or "all").lower().strip()
-    eff_limit = max_rows or limit or 50
-
-    base_sql = f"""
-    SELECT ProductID, ProductName, QuantityInStock, ReorderPoint, Supplier, SupplierContact, LeadTime, StorageLocation, UnitCost,
-           (QuantityInStock - ReorderPoint) as StockSurplus,
-           CASE
-             WHEN QuantityInStock = 0 THEN 'OUT_OF_STOCK'
-             WHEN QuantityInStock <= ReorderPoint THEN 'LOW_STOCK'
-             ELSE 'HEALTHY'
-           END as HealthStatus
-    FROM `{PROJECT_ID}.{DATASET_ID}.inventory-tracker`
-    """
-    filters: list[tuple[str, str, Any, str]] = []
-    if prod:
-        filters.append(("lower(ProductName)", "LIKE", prod.lower(), "STRING"))
-    if wh:
-        filters.append(("lower(StorageLocation)", "LIKE", wh.lower(), "STRING"))
-    if supp:
-        filters.append(("lower(Supplier)", "LIKE", supp.lower(), "STRING"))
-
-    if raw_status in ("low", "low_stock", "reorder", "below_reorder", "risk"):
-        filters.append(("QuantityInStock", "<=", "ReorderPoint", "EXPR"))
-    elif raw_status in ("out", "out_of_stock", "zero", "empty", "critical"):
-        filters.append(("QuantityInStock", "=", 0, "INT64"))
-    elif raw_status in ("healthy", "in_stock", "ok", "sufficient", "good"):
-        filters.append(("QuantityInStock", ">", "ReorderPoint", "EXPR"))
-
-    clean_filters: list[tuple[str, str, Any, str]] = []
-    extra_clauses: list[str] = []
-    for col, op, val, dtype in filters:
-        if dtype == "EXPR":
-            extra_clauses.append(f"{col} {op} {val}")
-        else:
-            clean_filters.append((col, op, val, dtype))
-
-    query, params = _build_filtered_query(base_sql, limit=eff_limit, filters=clean_filters, order_by="StockSurplus ASC")
-    if extra_clauses:
-        kw = "AND" if "WHERE" in query else "WHERE"
-        parts = query.split("ORDER BY")
-        query = f"{parts[0]} {kw} {' AND '.join(extra_clauses)} ORDER BY {parts[1]}"
-
-    rows = _execute_query(query, params)
-    total_stock = sum(r.get("QuantityInStock", 0) for r in rows)
-    return {
-        "count": len(rows),
-        "total_units_in_stock": total_stock,
-        "records": rows,
-    }
-
-
-@mcp.tool(
-    name="get_online_orders",
-    description="Query e-commerce online store orders with filters for order status ('Delivered', 'Shipped', 'Pending', 'Returned', 'Cancelled'), coupon codes ('SAVE10', 'FREESHIP'), product, and date.",
-)
-def get_online_orders(
-    order_id: str | None = None,
-    customer_id: str | None = None,
-    product: str | None = None,
-    product_name: str | None = None,
-    status: str | None = None,
-    coupon_code: str | None = None,
-    promo_code: str | None = None,
-    referral_source: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    limit: int = 50,
-    max_results: int | None = None,
-) -> dict[str, Any]:
-    """Retrieves online store orders with parameterized filtering and summary metrics."""
-    o_id = _clean_str(order_id)
-    c_id = _clean_str(customer_id)
-    prod = _normalize_product_name(_clean_str(product or product_name))
-    st = _clean_str(status)
-    coup = _clean_str(coupon_code or promo_code)
-    ref = _clean_str(referral_source)
-    d_from = _clean_str(date_from)
-    d_to = _clean_str(date_to)
-    eff_limit = max_results or limit or 50
-
-    base_sql = f"""
-    SELECT OrderID, Date, CustomerID, Product, Quantity, UnitPrice, TotalPrice, ItemsInCart, ShippingAddress, PaymentMethod, OrderStatus, TrackingNumber, CouponCode, ReferralSource
-    FROM `{PROJECT_ID}.{DATASET_ID}.online-store-orders`
-    """
-    filters: list[tuple[str, str, Any, str]] = []
-    if o_id:
-        filters.append(("OrderID", "=", o_id, "STRING"))
-    if c_id:
-        filters.append(("CustomerID", "=", c_id, "STRING"))
-    if prod:
-        filters.append(("lower(Product)", "LIKE", prod.lower(), "STRING"))
-    if st:
-        filters.append(("lower(OrderStatus)", "LIKE", st.lower(), "STRING"))
-    if coup:
-        filters.append(("lower(CouponCode)", "LIKE", coup.lower(), "STRING"))
-    if ref:
-        filters.append(("lower(ReferralSource)", "LIKE", ref.lower(), "STRING"))
-    if d_from:
-        filters.append(("Date", ">=", d_from, "DATE"))
-    if d_to:
-        filters.append(("Date", "<=", d_to, "DATE"))
-
-    query, params = _build_filtered_query(base_sql, limit=eff_limit, filters=filters, order_by="Date DESC")
-    rows = _execute_query(query, params)
-    
-    total_qty = sum(r.get("Quantity", 0) for r in rows)
-    total_rev = round(sum(r.get("TotalPrice", 0.0) for r in rows), 2)
-    avg_price = round(sum(r.get("UnitPrice", 0.0) for r in rows) / max(len(rows), 1), 2) if rows else 0.0
-
-    return {
-        "count": len(rows),
-        "total_quantity_sum": total_qty,
-        "total_revenue_usd": total_rev,
-        "average_unit_price": avg_price,
-        "records": rows,
-    }
-
-
-@mcp.tool(
-    name="get_regional_sales",
-    description="Query regional sales performance across territories ('Central', 'East', 'North', 'South', 'West'), account types ('Retail', 'Wholesale'), sales reps, promotions, and return flags.",
-)
-def get_regional_sales(
-    region: str | None = None,
-    product: str | None = None,
-    customer_type: str | None = None,
-    salesperson: str | None = None,
-    region_manager: str | None = None,
-    store_location: str | None = None,
-    promotion: str | None = None,
-    returned_only: bool = False,
-    returned: bool | int | str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    limit: int = 50,
-    top_n: int | None = None,
-) -> dict[str, Any]:
-    """Retrieves regional sales data with parameterized filtering and summary aggregations."""
-    reg = _clean_str(region)
-    prod = _normalize_product_name(_clean_str(product))
-    ctype = _clean_str(customer_type)
-    sales = _clean_str(salesperson)
-    mgr = _clean_str(region_manager)
-    store_loc = _clean_str(store_location)
-    prom = _clean_str(promotion)
-    is_ret = returned_only or (returned in (True, 1, "1", "true", "True", "yes", "YES"))
-    d_from = _clean_str(date_from)
-    d_to = _clean_str(date_to)
-    eff_limit = top_n or limit or 50
-
-    base_sql = f"""
-    SELECT OrderID, OrderDate, DeliveryDate, Date, Region, RegionManager, StoreLocation, Salesperson, Product, Quantity, UnitPrice, Discount, ShippingCost, TotalPrice, CustomerType, CustomerName, PaymentMethod, Promotion, Returned
-    FROM `{PROJECT_ID}.{DATASET_ID}.product-sales-region`
-    """
-    filters: list[tuple[str, str, Any, str]] = []
-    if reg:
-        filters.append(("lower(Region)", "LIKE", reg.lower(), "STRING"))
-    if prod:
-        filters.append(("lower(Product)", "LIKE", prod.lower(), "STRING"))
-    if ctype:
-        filters.append(("lower(CustomerType)", "LIKE", ctype.lower(), "STRING"))
-    if sales:
-        filters.append(("lower(Salesperson)", "LIKE", sales.lower(), "STRING"))
-    if mgr:
-        filters.append(("lower(RegionManager)", "LIKE", mgr.lower(), "STRING"))
-    if store_loc:
-        filters.append(("lower(StoreLocation)", "LIKE", store_loc.lower(), "STRING"))
-    if prom:
-        filters.append(("lower(Promotion)", "LIKE", prom.lower(), "STRING"))
-    if is_ret:
-        filters.append(("Returned", "=", 1, "INT64"))
-    if d_from:
-        filters.append(("OrderDate", ">=", d_from, "DATE"))
-    if d_to:
-        filters.append(("OrderDate", "<=", d_to, "DATE"))
-
-    query, params = _build_filtered_query(base_sql, limit=eff_limit, filters=filters, order_by="OrderDate DESC")
-    rows = _execute_query(query, params)
-    
-    total_qty = sum(r.get("Quantity", 0) for r in rows)
-    total_rev = round(sum(r.get("TotalPrice", 0.0) for r in rows), 2)
-    avg_price = round(sum(r.get("UnitPrice", 0.0) for r in rows) / max(len(rows), 1), 2) if rows else 0.0
-
-    return {
-        "count": len(rows),
-        "total_quantity_sum": total_qty,
-        "total_revenue_usd": total_rev,
-        "average_unit_price": avg_price,
-        "records": rows,
-    }
-
-
-@mcp.tool(
-    name="get_retail_transactions",
-    description="Query physical store POS transactions by store ID ('S1' to 'S10'), store branch ('Store A' to 'Store D'), cashier, manager, shift ('Morning', 'Afternoon', 'Evening'), day of week, and payment type ('Cash', 'Credit Card', 'Gift Card').",
-)
-def get_retail_transactions(
-    store_id: str | None = None,
-    location: str | None = None,
-    store: str | None = None,
-    product: str | None = None,
-    store_manager: str | None = None,
-    cashier: str | None = None,
-    shift: str | None = None,
-    day_of_week: str | None = None,
-    payment_type: str | None = None,
-    payment: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    limit: int = 50,
-    top_n: int | None = None,
-) -> dict[str, Any]:
-    """Retrieves physical retail transactions with parameterized filtering and summary aggregations."""
-    s_id = _clean_str(store_id)
-    loc = _clean_str(location)
-    if store:
-        s_clean = str(store).strip()
-        if re.match(r"^s\d+$", s_clean, re.I):
-            s_id = s_id or s_clean
-        else:
-            loc = loc or s_clean
-
-    prod = _normalize_product_name(_clean_str(product))
-    mgr = _clean_str(store_manager)
-    cash = _clean_str(cashier)
-    tod = _clean_str(shift)
-    dow = _clean_str(day_of_week)
-    pay = _clean_str(payment_type or payment)
-    d_from = _clean_str(date_from)
-    d_to = _clean_str(date_to)
-    eff_limit = top_n or limit or 50
-
-    base_sql = f"""
-    SELECT TransactionID, Date, Time, StoreID, Location, Product, Quantity, UnitPrice, PaymentType, Cashier, StoreManager, TimeOfDay, DayOfWeek, TotalPrice
-    FROM `{PROJECT_ID}.{DATASET_ID}.retail-store-transactions`
-    """
-    filters: list[tuple[str, str, Any, str]] = []
-    if s_id:
-        filters.append(("lower(StoreID)", "=", s_id.lower(), "STRING"))
-    if loc:
-        filters.append(("lower(Location)", "LIKE", loc.lower(), "STRING"))
-    if prod:
-        filters.append(("lower(Product)", "LIKE", prod.lower(), "STRING"))
-    if mgr:
-        filters.append(("lower(StoreManager)", "LIKE", mgr.lower(), "STRING"))
-    if cash:
-        filters.append(("lower(Cashier)", "=", cash.lower(), "STRING"))
-    if tod:
-        filters.append(("lower(TimeOfDay)", "LIKE", tod.lower(), "STRING"))
-    if dow:
-        filters.append(("lower(DayOfWeek)", "LIKE", dow.lower(), "STRING"))
-    if pay:
-        filters.append(("lower(PaymentType)", "LIKE", pay.lower(), "STRING"))
-    if d_from:
-        filters.append(("Date", ">=", d_from, "DATE"))
-    if d_to:
-        filters.append(("Date", "<=", d_to, "DATE"))
-
-    query, params = _build_filtered_query(base_sql, limit=eff_limit, filters=filters, order_by="Date DESC")
-    rows = _execute_query(query, params)
-    
-    total_qty = sum(r.get("Quantity", 0) for r in rows)
-    total_rev = round(sum(r.get("TotalPrice", 0.0) for r in rows), 2)
-    avg_price = round(sum(r.get("UnitPrice", 0.0) for r in rows) / max(len(rows), 1), 2) if rows else 0.0
-
-    return {
-        "count": len(rows),
-        "total_quantity_sum": total_qty,
-        "total_revenue_usd": total_rev,
-        "average_unit_price": avg_price,
-        "records": rows,
-    }
-
-
-# ==============================================================================
-# Cross-Channel & Executive Aggregation Tools
+# Executive Top-Line Omnichannel Synthesis Tool
 # ==============================================================================
 
 @mcp.tool(
@@ -857,12 +457,10 @@ def get_executive_sales_summary(
     target_product = _normalize_product_name(_clean_str(product or product_name))
 
     product_filter_clause = ""
-    product_filter_clause_where = ""
     params: list[tuple[str, str, Any]] = []
 
     if target_product:
         product_filter_clause = "WHERE lower(Product) = @target_prod"
-        product_filter_clause_where = "WHERE lower(Product) = @target_prod"
         params.append(("target_prod", "STRING", target_product.lower()))
 
     sql = f"""
@@ -899,112 +497,88 @@ def get_executive_sales_summary(
         COALESCE(SUM(QuantityInStock), 0) as total_units_in_stock,
         COUNTIF(QuantityInStock <= ReorderPoint) as skus_at_reorder_risk
       FROM {table_dataset}.`inventory-tracker`
-      {f"WHERE lower(ProductName) = @target_prod" if target_product else ""}
+      {product_filter_clause.replace('Product', 'ProductName')}
     )
     SELECT
-      o.online_orders,
-      ROUND(o.online_revenue, 2) as online_revenue,
-      o.online_units,
-      o.online_returns,
-      ROUND(o.online_returns / NULLIF(o.online_orders, 0) * 100, 2) as online_return_rate_pct,
-      r.retail_txns,
-      ROUND(r.retail_revenue, 2) as retail_revenue,
-      r.retail_units,
-      reg.regional_orders,
-      ROUND(reg.regional_revenue, 2) as regional_revenue,
-      ROUND(o.online_revenue + r.retail_revenue, 2) as total_omnichannel_revenue,
-      o.online_units + r.retail_units as total_omnichannel_units,
-      inv.total_skus,
-      inv.total_units_in_stock,
-      inv.skus_at_reorder_risk
-    FROM online o
-    CROSS JOIN retail r
-    CROSS JOIN regional reg
-    CROSS JOIN inventory inv
+      online.*,
+      retail.*,
+      regional.*,
+      inventory.*
+    FROM online
+    CROSS JOIN retail
+    CROSS JOIN regional
+    CROSS JOIN inventory
     """
     rows = _execute_query(sql, params)
-    
-    top_prods_sql = f"""
-    SELECT Product, SUM(Quantity) as units_sold, ROUND(SUM(TotalPrice), 2) as revenue
-    FROM (
-      SELECT Product, Quantity, TotalPrice FROM {table_dataset}.`online-store-orders`
+    data = rows[0] if rows else {}
+
+    # Rank products by omnichannel revenue
+    top_products_sql = f"""
+    WITH combined_products AS (
+      SELECT Product, TotalPrice, Quantity FROM {table_dataset}.`online-store-orders`
       UNION ALL
-      SELECT Product, Quantity, TotalPrice FROM {table_dataset}.`retail-store-transactions`
-    )
-    {product_filter_clause_where}
-    GROUP BY Product
-    ORDER BY revenue DESC
-    """
-    top_rows = _execute_query(top_prods_sql, params)
-
-    summary = rows[0] if rows else {}
-    summary["product_performance_ranking"] = top_rows
-    if target_product:
-        summary["filter_product"] = target_product
-    return summary
-
-
-@mcp.tool(
-    name="get_omnichannel_comparison",
-    description="Side-by-side revenue, volume, and average price comparison per product between Online Store Orders and Physical Retail Stores.",
-)
-def get_omnichannel_comparison(
-    product: str | None = None,
-    limit: int = 50,
-) -> dict[str, Any]:
-    """Provides side-by-side omnichannel channel performance breakdown per product."""
-    table_dataset = f"`{PROJECT_ID}.{DATASET_ID}`"
-    target_product = _normalize_product_name(_clean_str(product))
-
-    filter_clause = ""
-    params: list[tuple[str, str, Any]] = []
-    if target_product:
-        filter_clause = "WHERE lower(Product) = @target_prod"
-        params.append(("target_prod", "STRING", target_product.lower()))
-
-    sql = f"""
-    WITH online AS (
-      SELECT
-        Product,
-        COUNT(*) as online_orders,
-        SUM(Quantity) as online_units,
-        ROUND(SUM(TotalPrice), 2) as online_revenue,
-        ROUND(AVG(UnitPrice), 2) as online_avg_unit_price
-      FROM {table_dataset}.`online-store-orders`
-      {filter_clause}
-      GROUP BY Product
-    ),
-    retail AS (
-      SELECT
-        Product,
-        COUNT(*) as retail_txns,
-        SUM(Quantity) as retail_units,
-        ROUND(SUM(TotalPrice), 2) as retail_revenue,
-        ROUND(AVG(UnitPrice), 2) as retail_avg_unit_price
-      FROM {table_dataset}.`retail-store-transactions`
-      {filter_clause}
-      GROUP BY Product
+      SELECT Product, TotalPrice, Quantity FROM {table_dataset}.`retail-store-transactions`
     )
     SELECT
-      COALESCE(o.Product, r.Product) as product,
-      COALESCE(o.online_units, 0) as online_units,
-      COALESCE(o.online_revenue, 0) as online_revenue,
-      COALESCE(o.online_avg_unit_price, 0) as online_avg_unit_price,
-      COALESCE(r.retail_units, 0) as retail_units,
-      COALESCE(r.retail_revenue, 0) as retail_revenue,
-      COALESCE(r.retail_avg_unit_price, 0) as retail_avg_unit_price,
-      COALESCE(o.online_units, 0) + COALESCE(r.retail_units, 0) as total_units,
-      ROUND(COALESCE(o.online_revenue, 0) + COALESCE(r.retail_revenue, 0), 2) as total_revenue,
-      ROUND(COALESCE(o.online_revenue, 0) / NULLIF(COALESCE(o.online_revenue, 0) + COALESCE(r.retail_revenue, 0), 0) * 100, 2) as online_revenue_share_pct
-    FROM online o
-    FULL OUTER JOIN retail r ON o.Product = r.Product
+      Product,
+      ROUND(SUM(TotalPrice), 2) as total_revenue,
+      SUM(Quantity) as total_units_sold,
+      COUNT(*) as transaction_count
+    FROM combined_products
+    GROUP BY Product
     ORDER BY total_revenue DESC
-    LIMIT @limit
     """
-    params.append(("limit", "INT64", min(limit, 500)))
-    rows = _execute_query(sql, params)
-    return {"count": len(rows), "comparison": rows}
+    top_products = _execute_query(top_products_sql)
 
+    online_rev = float(data.get("online_revenue", 0.0))
+    retail_rev = float(data.get("retail_revenue", 0.0))
+    regional_rev = float(data.get("regional_revenue", 0.0))
+    total_omni_rev = round(online_rev + retail_rev + regional_rev, 2)
+
+    online_units = int(data.get("online_units", 0))
+    retail_units = int(data.get("retail_units", 0))
+    regional_units = int(data.get("regional_units", 0))
+    total_units_sold = online_units + retail_units + regional_units
+
+    online_orders_count = int(data.get("online_orders", 0))
+    online_returns = int(data.get("online_returns", 0))
+    online_return_rate = round((online_returns / max(online_orders_count, 1)) * 100, 2)
+
+    return {
+        "filtered_product": target_product,
+        "total_omnichannel_revenue": total_omni_rev,
+        "total_units_sold_all_channels": total_units_sold,
+        "online_orders": {
+            "total_orders": online_orders_count,
+            "units_sold": online_units,
+            "revenue_usd": online_rev,
+            "return_count": online_returns,
+            "return_rate_percentage": online_return_rate,
+            "cancelled_count": int(data.get("online_cancelled", 0)),
+        },
+        "retail_store_pos": {
+            "total_transactions": int(data.get("retail_txns", 0)),
+            "units_sold": retail_units,
+            "revenue_usd": retail_rev,
+        },
+        "regional_sales": {
+            "total_orders": int(data.get("regional_orders", 0)),
+            "units_sold": regional_units,
+            "revenue_usd": regional_rev,
+            "returns": int(data.get("regional_returns", 0)),
+        },
+        "inventory_snapshot": {
+            "total_skus": int(data.get("total_skus", 0)),
+            "total_units_in_stock": int(data.get("total_units_in_stock", 0)),
+            "skus_at_reorder_risk": int(data.get("skus_at_reorder_risk", 0)),
+        },
+        "product_performance_ranking": top_products,
+    }
+
+
+# ==============================================================================
+# Supply Chain Restock Alerts Tool
+# ==============================================================================
 
 @mcp.tool(
     name="get_inventory_restock_alerts",
@@ -1014,7 +588,7 @@ def get_inventory_restock_alerts(
     warehouse: str | None = None,
     supplier: str | None = None,
     product: str | None = None,
-    limit: int = 100,
+    limit: int = 25,
 ) -> dict[str, Any]:
     """Provides actionable restock alerts for supply chain and procurement managers."""
     table_dataset = f"`{PROJECT_ID}.{DATASET_ID}`"
@@ -1032,7 +606,7 @@ def get_inventory_restock_alerts(
         filters.append("lower(Supplier) LIKE @supp")
         params.append(("supp", "STRING", f"%{supp.lower()}%"))
     if prod:
-        filters.append(("lower(ProductName) LIKE @prod"))
+        filters.append("lower(ProductName) LIKE @prod")
         params.append(("prod", "STRING", f"%{prod.lower()}%"))
 
     where_clause = " WHERE " + " AND ".join(filters)
@@ -1060,7 +634,7 @@ def get_inventory_restock_alerts(
     ORDER BY DeficitUnits DESC, LeadTimeDays DESC
     LIMIT @limit
     """
-    params.append(("limit", "INT64", min(limit, 1000)))
+    params.append(("limit", "INT64", min(limit, 500)))
     rows = _execute_query(sql, params)
     total_deficit = sum(r.get("DeficitUnits", 0) for r in rows)
     total_cost = round(sum(r.get("EstimatedRestockCostUsd", 0.0) for r in rows), 2)
@@ -1073,7 +647,7 @@ def get_inventory_restock_alerts(
 
 
 # ==============================================================================
-# Safe SQL Runner with Guardrails
+# Universal SQL Query Engine with Guardrails & Normalization
 # ==============================================================================
 
 _SQL_TABLE_ALIAS_MAP: dict[str, str] = {
@@ -1141,12 +715,45 @@ def _rewrite_and_guard_sql(raw_query: str) -> tuple[str | None, str | None]:
     for token, full_table in placeholder_map.items():
         q = q.replace(token, full_table)
 
-    # Automatically correct common column name hallucinations
+    # Automatically correct common column name hallucinations and snake_case aliases
     q = re.sub(r"(?i)\btotal_amount\b", "TotalPrice", q)
     q = re.sub(r"(?i)\bsales_amount\b", "TotalPrice", q)
     q = re.sub(r"(?i)\border_amount\b", "TotalPrice", q)
+    q = re.sub(r"(?i)\bunit_price\b", "UnitPrice", q)
+    q = re.sub(r"(?i)\btotal_price\b", "TotalPrice", q)
+    q = re.sub(r"(?i)\bproduct_category\b", "ProductCategory", q)
+    q = re.sub(r"(?i)\border_status\b", "OrderStatus", q)
+    q = re.sub(r"(?i)\bpayment_method\b", "PaymentMethod", q)
+    q = re.sub(r"(?i)\bpayment_type\b", "PaymentType", q)
+    q = re.sub(r"(?i)\bstore_location\b", "StoreLocation", q)
+    q = re.sub(r"(?i)\btime_of_day\b", "TimeOfDay", q)
+    q = re.sub(r"(?i)\bday_of_week\b", "DayOfWeek", q)
+    q = re.sub(r"(?i)\breview_rating\b", "ReviewRating", q)
+    q = re.sub(r"(?i)\bquantity_in_stock\b", "QuantityInStock", q)
+    q = re.sub(r"(?i)\breorder_point\b", "ReorderPoint", q)
+    q = re.sub(r"(?i)\bstorage_location\b", "StorageLocation", q)
+    q = re.sub(r"(?i)\bsupplier_contact\b", "SupplierContact", q)
+
+    # Plural product corrections in literal strings (e.g., 'Laptops' -> 'Laptop')
+    q = re.sub(r"(?i)'(laptops|phones|monitors|printers|desks|chairs|tablets)'", lambda m: f"'{m.group(1)[:-1].title()}'", q)
+    # Store ID vs Location corrections (e.g., StoreID = 'C' -> Location = 'Store C')
+    q = re.sub(r"(?i)\bStoreID\s*=\s*'([A-D])'", r"Location = 'Store \1'", q)
+    q = re.sub(r"(?i)\bStoreID\s*=\s*'Store\s*([A-D])'", r"Location = 'Store \1'", q)
 
     return q, None
+
+
+@mcp.tool(
+    name="execute_sql_query",
+    description="Execute a read-only GoogleSQL query against beam-suntory-gemini-llm-poc.sales_products dataset. Handles table aliases, snake_case columns, and hyphenated tables automatically.",
+)
+def execute_sql_query(
+    query: str | None = None,
+    sql: str | None = None,
+    max_rows: int = 100,
+) -> dict[str, Any]:
+    """Execute standard GoogleSQL query with guardrails and auto-normalization."""
+    return execute_custom_analytics_query(query=query, sql=sql, max_rows=max_rows)
 
 
 @mcp.tool(
