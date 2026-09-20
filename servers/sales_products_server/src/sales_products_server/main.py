@@ -446,7 +446,7 @@ def get_dimension_catalog(
 
 @mcp.tool(
     name="get_executive_sales_summary",
-    description="Calculate top-line executive KPIs across all channels: total revenue, online vs retail vs regional channel mix, order counts, and top-selling products ranking.",
+    description="MANDATORY tool for top-line omnichannel sales revenue, units sold across all channels, online vs retail channel comparison, return rate %, and top-selling product rankings. ALWAYS use this tool instead of writing custom SQL for executive sales metrics.",
 )
 def get_executive_sales_summary(
     product: str | None = None,
@@ -670,6 +670,9 @@ _SQL_TABLE_ALIAS_MAP: dict[str, str] = {
     "online_orders": "online-store-orders",
     "online_store": "online-store-orders",
     "store_orders": "online-store-orders",
+    "sales_orders": "online-store-orders",
+    "sales_online": "online-store-orders",
+    "online_sales": "online-store-orders",
     "online": "online-store-orders",
     "orders": "online-store-orders",
     
@@ -677,16 +680,22 @@ _SQL_TABLE_ALIAS_MAP: dict[str, str] = {
     "product_sales_region": "product-sales-region",
     "product_sales_regions": "product-sales-region",
     "regional_sales": "product-sales-region",
+    "sales_regional": "product-sales-region",
+    "regional_orders": "product-sales-region",
     "sales_region": "product-sales-region",
     "sales_regions": "product-sales-region",
     
     "retail-store-transactions": "retail-store-transactions",
     "retail_store_transactions": "retail-store-transactions",
     "retail_transactions": "retail-store-transactions",
+    "sales_retail": "retail-store-transactions",
+    "retail_sales": "retail-store-transactions",
+    "pos_sales": "retail-store-transactions",
     "retail_store": "retail-store-transactions",
     "store_transactions": "retail-store-transactions",
     "retail": "retail-store-transactions",
     "transactions": "retail-store-transactions",
+    "sales": "retail-store-transactions",
 }
 
 
@@ -715,7 +724,12 @@ def _rewrite_and_guard_sql(raw_query: str) -> tuple[str | None, str | None]:
     for token, full_table in placeholder_map.items():
         q = q.replace(token, full_table)
 
-    # Automatically correct common column name hallucinations and snake_case aliases
+    # Column aliases and name normalizations
+    q = re.sub(r"(?i)\brevenue\b", "TotalPrice", q)
+    q = re.sub(r"(?i)\btotal_sales\b", "TotalPrice", q)
+    q = re.sub(r"(?i)\bsales_revenue\b", "TotalPrice", q)
+    q = re.sub(r"(?i)\bproduct_name\b", "Product", q)
+    q = re.sub(r"(?i)\bquantity_sold\b", "Quantity", q)
     q = re.sub(r"(?i)\btotal_amount\b", "TotalPrice", q)
     q = re.sub(r"(?i)\bsales_amount\b", "TotalPrice", q)
     q = re.sub(r"(?i)\border_amount\b", "TotalPrice", q)
@@ -745,7 +759,7 @@ def _rewrite_and_guard_sql(raw_query: str) -> tuple[str | None, str | None]:
 
 @mcp.tool(
     name="execute_sql_query",
-    description="Execute a read-only GoogleSQL query against beam-suntory-gemini-llm-poc.sales_products dataset. Handles table aliases, snake_case columns, and hyphenated tables automatically.",
+    description="Execute a read-only GoogleSQL query against beam-suntory-gemini-llm-poc.sales_products dataset. Valid tables: `online-store-orders`, `retail-store-transactions`, `product-sales-region`, `inventory-tracker`, `customer-purchase-history`. Do NOT use table 'sales'.",
 )
 def execute_sql_query(
     query: str | None = None,
@@ -775,7 +789,12 @@ def execute_custom_analytics_query(
 
     formatted_query, error_msg = _rewrite_and_guard_sql(raw_query)
     if error_msg:
-        return {"status": "error", "error": error_msg}
+        return {
+            "status": "error",
+            "error": error_msg,
+            "valid_tables": list(_DATASET_METADATA["tables"].keys()),
+            "guidance": "Only read-only SELECT queries on valid tables are permitted.",
+        }
 
     try:
         client = get_bigquery_client()
@@ -794,6 +813,14 @@ def execute_custom_analytics_query(
             "status": "error",
             "error": str(e),
             "attempted_query": formatted_query,
+            "valid_tables": [
+                "`beam-suntory-gemini-llm-poc.sales_products.online-store-orders`",
+                "`beam-suntory-gemini-llm-poc.sales_products.retail-store-transactions`",
+                "`beam-suntory-gemini-llm-poc.sales_products.product-sales-region`",
+                "`beam-suntory-gemini-llm-poc.sales_products.inventory-tracker`",
+                "`beam-suntory-gemini-llm-poc.sales_products.customer-purchase-history`"
+            ],
+            "guidance": "Table not found or syntax error. Use the exact valid tables above. For top-line omnichannel revenue, return rates, or top products ranking, use get_executive_sales_summary() instead of SQL."
         }
 
 
