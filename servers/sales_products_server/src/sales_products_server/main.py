@@ -338,12 +338,11 @@ def _normalize_table_name(name: str | None) -> str | None:
 
 @mcp.tool(
     name="get_dataset_metadata",
-    description="PRIMARY TOOL to inspect schemas, column descriptions, record counts, and cross-table join relationships for all tables in the sales_products BigQuery dataset.",
+    description="Inspect schemas, column descriptions, record counts, and cross-table join relationships for all tables in the sales_products BigQuery dataset.",
 )
 def get_dataset_metadata(
     table_name: str | None = None,
     table: str | None = None,
-    dataset: str | None = None,
 ) -> dict[str, Any]:
     """Returns schemas and join graphs for the dataset to eliminate model hallucinations."""
     req_table = _normalize_table_name(table_name or table)
@@ -360,22 +359,20 @@ def get_dataset_metadata(
 
 @mcp.tool(
     name="get_dimension_catalog",
-    description="PRIMARY TOOL for listing exact distinct values of any categorical dimension: products list ('products'), territories ('regions'), physical branches ('store_locations'), store IDs ('store_ids'), fulfillment statuses ('order_statuses'), payment methods ('payment_methods'), warehouses ('storage_locations'), customer account types ('customer_types'), promotion campaigns ('promotions'). Defaults to 'products'.",
+    description="List distinct values of categorical dimensions: 'store_locations' (physical retail stores), 'products' (product catalog), 'regions' (sales territories), 'storage_locations' (warehouses), 'suppliers' (inventory vendors), 'order_statuses', 'payment_methods', 'customer_types', 'promotions'. Set dimension='store_locations' for physical retail stores.",
 )
 def get_dimension_catalog(
-    dimension: str = "products",
+    dimension: str | None = None,
     dim: str | None = None,
-    dimension_name: str | None = None,
-    name: str | None = None,
     category: str | None = None,
-    type: str | None = None,
 ) -> dict[str, Any]:
     """Returns authoritative distinct values for key dimensions with alias normalization."""
     table_dataset = f"`{PROJECT_ID}.{DATASET_ID}`"
     
     # Resolve parameter synonyms
-    dim_raw = dim or dimension_name or name or category or type or dimension or "products"
-    dim_key = str(dim_raw).lower().strip().replace("-", "_").replace(" ", "_")
+    dim_raw = dimension or dim or category
+    has_explicit_dim = bool(dim_raw)
+    dim_key = str(dim_raw or "products").lower().strip().replace("-", "_").replace(" ", "_")
     
     aliases = {
         "product": "products",
@@ -397,6 +394,10 @@ def get_dimension_catalog(
         "store_locations": "store_locations",
         "location": "store_locations",
         "locations": "store_locations",
+        "retail_store": "store_locations",
+        "retail_stores": "store_locations",
+        "physical_store": "store_locations",
+        "physical_stores": "store_locations",
         "branch": "store_locations",
         "branches": "store_locations",
         "store_id": "store_ids",
@@ -420,6 +421,10 @@ def get_dimension_catalog(
         "warehouse": "storage_locations",
         "warehouses": "storage_locations",
         "wh": "storage_locations",
+        "supplier": "suppliers",
+        "suppliers": "suppliers",
+        "vendor": "suppliers",
+        "vendors": "suppliers",
         "customer_type": "customer_types",
         "customer_types": "customer_types",
         "customertype": "customer_types",
@@ -442,6 +447,7 @@ def get_dimension_catalog(
         "order_statuses": f"SELECT DISTINCT OrderStatus as val FROM {table_dataset}.`online-store-orders` ORDER BY 1",
         "payment_methods": f"SELECT DISTINCT PaymentMethod as val FROM {table_dataset}.`customer-purchase-history` ORDER BY 1",
         "storage_locations": f"SELECT DISTINCT StorageLocation as val FROM {table_dataset}.`inventory-tracker` ORDER BY 1",
+        "suppliers": f"SELECT DISTINCT Supplier as val FROM {table_dataset}.`inventory-tracker` ORDER BY 1",
         "customer_types": f"SELECT DISTINCT CustomerType as val FROM {table_dataset}.`product-sales-region` ORDER BY 1",
         "promotions": f"SELECT DISTINCT Promotion as val FROM {table_dataset}.`product-sales-region` WHERE Promotion IS NOT NULL ORDER BY 1",
     }
@@ -452,10 +458,22 @@ def get_dimension_catalog(
             "valid_dimensions": list(dimension_queries.keys()),
         }
     rows = _execute_query(q)
-    return {
+    result: dict[str, Any] = {
         "dimension": dim_key,
         "values": [r["val"] for r in rows if r["val"] is not None],
     }
+    # If called without explicit dimension argument, append omnibus summary so the LLM gets store locations, regions, etc. immediately
+    if not has_explicit_dim:
+        result["all_dimensions_summary"] = {
+            "store_locations": ["Store A", "Store B", "Store C", "Store D"],
+            "regions": ["Central", "East", "North", "South", "West"],
+            "order_statuses": ["Cancelled", "Delivered", "Pending", "Returned", "Shipped"],
+            "payment_methods": ["Cash", "Credit Card", "Debit Card", "Gift Card", "Online"],
+            "storage_locations": ["WH-1", "WH-2", "WH-3", "WH-4", "WH-5"],
+            "customer_types": ["Retail", "Wholesale"],
+            "promotions": ["FREESHIP", "SAVE10", "WINTER15"],
+        }
+    return result
 
 
 # ==============================================================================
@@ -464,55 +482,37 @@ def get_dimension_catalog(
 
 @mcp.tool(
     name="get_customer_purchases",
-    description="PRIMARY TOOL to query customer purchase history with parameterized filters for customer ID, product, category, payment method, rating (1-5), and dates. Automatically computes total units, total revenue, and average price.",
+    description="Query customer purchase history with filters for customer ID, product, category, payment method, rating (1-5), and dates.",
 )
 def get_customer_purchases(
     customer_id: str | None = None,
-    customer: str | None = None,
     product: str | None = None,
     product_name: str | None = None,
-    product_category: str | None = None,
     category: str | None = None,
     payment_method: str | None = None,
-    payment: str | None = None,
-    payment_type: str | None = None,
-    min_review_rating: int | None = None,
-    review_rating: int | None = None,
     rating: int | None = None,
     min_rating: int | None = None,
-    purchase_date_from: str | None = None,
     date_from: str | None = None,
-    start_date: str | None = None,
-    from_date: str | None = None,
-    purchase_date_to: str | None = None,
     date_to: str | None = None,
-    end_date: str | None = None,
-    to_date: str | None = None,
     limit: int = 50,
     max_results: int | None = None,
-    max_rows: int | None = None,
-    top_n: int | None = None,
 ) -> dict[str, Any]:
     """Retrieves customer purchase history with parameterized filtering and summary aggregations."""
-    c_id = _clean_str(customer_id or customer)
+    c_id = _clean_str(customer_id)
     prod = _normalize_product_name(_clean_str(product or product_name))
-    cat = _normalize_category(_clean_str(product_category or category))
-    pay = _clean_str(payment_method or payment or payment_type)
+    cat = _normalize_category(_clean_str(category))
+    pay = _clean_str(payment_method)
     
-    r_val = min_review_rating if min_review_rating is not None else (
-        review_rating if review_rating is not None else (
-            rating if rating is not None else min_rating
-        )
-    )
+    r_val = rating if rating is not None else min_rating
     if r_val is not None:
         try:
             r_val = int(r_val)
         except (ValueError, TypeError):
             r_val = None
 
-    d_from = _clean_str(purchase_date_from or date_from or start_date or from_date)
-    d_to = _clean_str(purchase_date_to or date_to or end_date or to_date)
-    eff_limit = max_results or max_rows or top_n or limit or 50
+    d_from = _clean_str(date_from)
+    d_to = _clean_str(date_to)
+    eff_limit = max_results or limit or 50
 
     base_sql = f"""
     SELECT CustomerID, CustomerName, Product, ProductCategory, PurchaseDate, Quantity, UnitPrice, TotalPrice, PaymentMethod, ReviewRating
@@ -552,32 +552,22 @@ def get_customer_purchases(
 
 @mcp.tool(
     name="get_inventory_status",
-    description="PRIMARY TOOL to query warehouse inventory stock levels, unit costs, lead times, and restock thresholds with stock health filtering ('all', 'low_stock', 'out_of_stock', 'healthy').",
+    description="Query warehouse inventory stock levels, unit costs, lead times, and restock thresholds with stock health filtering ('all', 'low_stock', 'out_of_stock', 'healthy').",
 )
 def get_inventory_status(
-    product_name: str | None = None,
     product: str | None = None,
-    storage_location: str | None = None,
     warehouse: str | None = None,
-    location: str | None = None,
-    storage: str | None = None,
     supplier: str | None = None,
-    vendor: str | None = None,
-    supplier_name: str | None = None,
-    stock_status: str = "all",
-    status: str | None = None,
-    health: str | None = None,
+    status: str = "all",
     limit: int = 50,
-    max_results: int | None = None,
     max_rows: int | None = None,
-    top_n: int | None = None,
 ) -> dict[str, Any]:
     """Retrieves inventory levels and health status."""
-    prod = _normalize_product_name(_clean_str(product_name or product))
-    wh = _clean_str(storage_location or warehouse or location or storage)
-    supp = _clean_str(supplier or vendor or supplier_name)
-    raw_status = (status or health or stock_status or "all").lower().strip()
-    eff_limit = max_results or max_rows or top_n or limit or 50
+    prod = _normalize_product_name(_clean_str(product))
+    wh = _clean_str(warehouse)
+    supp = _clean_str(supplier)
+    raw_status = (status or "all").lower().strip()
+    eff_limit = max_rows or limit or 50
 
     base_sql = f"""
     SELECT ProductID, ProductName, QuantityInStock, ReorderPoint, Supplier, SupplierContact, LeadTime, StorageLocation, UnitCost,
@@ -629,47 +619,32 @@ def get_inventory_status(
 
 @mcp.tool(
     name="get_online_orders",
-    description="PRIMARY TOOL to query e-commerce online store orders with filters for order status ('Delivered', 'Shipped', 'Pending', 'Returned', 'Cancelled'), coupon codes ('SAVE10', 'FREESHIP'), product, customer, and date.",
+    description="Query e-commerce online store orders with filters for order status ('Delivered', 'Shipped', 'Pending', 'Returned', 'Cancelled'), coupon codes ('SAVE10', 'FREESHIP'), product, and date.",
 )
 def get_online_orders(
     order_id: str | None = None,
     customer_id: str | None = None,
-    customer: str | None = None,
     product: str | None = None,
     product_name: str | None = None,
-    order_status: str | None = None,
     status: str | None = None,
     coupon_code: str | None = None,
-    coupon: str | None = None,
     promo_code: str | None = None,
-    discount_code: str | None = None,
     referral_source: str | None = None,
-    source: str | None = None,
-    referral: str | None = None,
-    channel: str | None = None,
-    order_date_from: str | None = None,
     date_from: str | None = None,
-    start_date: str | None = None,
-    from_date: str | None = None,
-    order_date_to: str | None = None,
     date_to: str | None = None,
-    end_date: str | None = None,
-    to_date: str | None = None,
     limit: int = 50,
     max_results: int | None = None,
-    max_rows: int | None = None,
-    top_n: int | None = None,
 ) -> dict[str, Any]:
     """Retrieves online store orders with parameterized filtering and summary metrics."""
     o_id = _clean_str(order_id)
-    c_id = _clean_str(customer_id or customer)
+    c_id = _clean_str(customer_id)
     prod = _normalize_product_name(_clean_str(product or product_name))
-    st = _clean_str(order_status or status)
-    coup = _clean_str(coupon_code or coupon or promo_code or discount_code)
-    ref = _clean_str(referral_source or source or referral or channel)
-    d_from = _clean_str(order_date_from or date_from or start_date or from_date)
-    d_to = _clean_str(order_date_to or date_to or end_date or to_date)
-    eff_limit = max_results or max_rows or top_n or limit or 50
+    st = _clean_str(status)
+    coup = _clean_str(coupon_code or promo_code)
+    ref = _clean_str(referral_source)
+    d_from = _clean_str(date_from)
+    d_to = _clean_str(date_to)
+    eff_limit = max_results or limit or 50
 
     base_sql = f"""
     SELECT OrderID, Date, CustomerID, Product, Quantity, UnitPrice, TotalPrice, ItemsInCart, ShippingAddress, PaymentMethod, OrderStatus, TrackingNumber, CouponCode, ReferralSource
@@ -711,54 +686,35 @@ def get_online_orders(
 
 @mcp.tool(
     name="get_regional_sales",
-    description="PRIMARY TOOL to query regional sales performance across territories ('Central', 'East', 'North', 'South', 'West'), account types ('Retail', 'Wholesale'), sales reps, discounts, and return flags.",
+    description="Query regional sales performance across territories ('Central', 'East', 'North', 'South', 'West'), account types ('Retail', 'Wholesale'), sales reps, promotions, and return flags.",
 )
 def get_regional_sales(
     region: str | None = None,
     product: str | None = None,
-    product_name: str | None = None,
     customer_type: str | None = None,
-    account_type: str | None = None,
     salesperson: str | None = None,
-    sales_rep: str | None = None,
-    rep: str | None = None,
-    agent: str | None = None,
     region_manager: str | None = None,
-    manager: str | None = None,
     store_location: str | None = None,
-    store: str | None = None,
-    location: str | None = None,
     promotion: str | None = None,
-    promo: str | None = None,
-    campaign: str | None = None,
     returned_only: bool = False,
     returned: bool | int | str | None = None,
-    order_date_from: str | None = None,
     date_from: str | None = None,
-    start_date: str | None = None,
-    from_date: str | None = None,
-    order_date_to: str | None = None,
     date_to: str | None = None,
-    end_date: str | None = None,
-    to_date: str | None = None,
     limit: int = 50,
-    max_results: int | None = None,
-    max_rows: int | None = None,
     top_n: int | None = None,
 ) -> dict[str, Any]:
     """Retrieves regional sales data with parameterized filtering and summary aggregations."""
     reg = _clean_str(region)
-    prod = _normalize_product_name(_clean_str(product or product_name))
-    ctype = _clean_str(customer_type or account_type)
-    sales = _clean_str(salesperson or sales_rep or rep or agent)
-    mgr = _clean_str(region_manager or manager)
-    store_loc = _clean_str(store_location or store or location)
-    prom = _clean_str(promotion or promo or campaign)
-    
+    prod = _normalize_product_name(_clean_str(product))
+    ctype = _clean_str(customer_type)
+    sales = _clean_str(salesperson)
+    mgr = _clean_str(region_manager)
+    store_loc = _clean_str(store_location)
+    prom = _clean_str(promotion)
     is_ret = returned_only or (returned in (True, 1, "1", "true", "True", "yes", "YES"))
-    d_from = _clean_str(order_date_from or date_from or start_date or from_date)
-    d_to = _clean_str(order_date_to or date_to or end_date or to_date)
-    eff_limit = max_results or max_rows or top_n or limit or 50
+    d_from = _clean_str(date_from)
+    d_to = _clean_str(date_to)
+    eff_limit = top_n or limit or 50
 
     base_sql = f"""
     SELECT OrderID, OrderDate, DeliveryDate, Date, Region, RegionManager, StoreLocation, Salesperson, Product, Quantity, UnitPrice, Discount, ShippingCost, TotalPrice, CustomerType, CustomerName, PaymentMethod, Promotion, Returned
@@ -804,40 +760,27 @@ def get_regional_sales(
 
 @mcp.tool(
     name="get_retail_transactions",
-    description="PRIMARY TOOL to query physical store POS transactions by store ID ('S1' to 'S10'), store branch ('Store A' to 'Store D'), cashier, manager, shift ('Morning', 'Afternoon', 'Evening'), day of week, and payment type ('Cash', 'Credit Card', 'Gift Card').",
+    description="Query physical store POS transactions by store ID ('S1' to 'S10'), store branch ('Store A' to 'Store D'), cashier, manager, shift ('Morning', 'Afternoon', 'Evening'), day of week, and payment type ('Cash', 'Credit Card', 'Gift Card').",
 )
 def get_retail_transactions(
     store_id: str | None = None,
     location: str | None = None,
-    store_location: str | None = None,
     store: str | None = None,
     product: str | None = None,
-    product_name: str | None = None,
     store_manager: str | None = None,
-    manager: str | None = None,
     cashier: str | None = None,
-    cashier_id: str | None = None,
-    time_of_day: str | None = None,
     shift: str | None = None,
     day_of_week: str | None = None,
-    day: str | None = None,
     payment_type: str | None = None,
     payment: str | None = None,
-    payment_method: str | None = None,
     date_from: str | None = None,
-    start_date: str | None = None,
-    from_date: str | None = None,
     date_to: str | None = None,
-    end_date: str | None = None,
-    to_date: str | None = None,
     limit: int = 50,
-    max_results: int | None = None,
-    max_rows: int | None = None,
     top_n: int | None = None,
 ) -> dict[str, Any]:
     """Retrieves physical retail transactions with parameterized filtering and summary aggregations."""
     s_id = _clean_str(store_id)
-    loc = _clean_str(location or store_location)
+    loc = _clean_str(location)
     if store:
         s_clean = str(store).strip()
         if re.match(r"^s\d+$", s_clean, re.I):
@@ -845,15 +788,15 @@ def get_retail_transactions(
         else:
             loc = loc or s_clean
 
-    prod = _normalize_product_name(_clean_str(product or product_name))
-    mgr = _clean_str(store_manager or manager)
-    cash = _clean_str(cashier or cashier_id)
-    tod = _clean_str(time_of_day or shift)
-    dow = _clean_str(day_of_week or day)
-    pay = _clean_str(payment_type or payment or payment_method)
-    d_from = _clean_str(date_from or start_date or from_date)
-    d_to = _clean_str(date_to or end_date or to_date)
-    eff_limit = max_results or max_rows or top_n or limit or 50
+    prod = _normalize_product_name(_clean_str(product))
+    mgr = _clean_str(store_manager)
+    cash = _clean_str(cashier)
+    tod = _clean_str(shift)
+    dow = _clean_str(day_of_week)
+    pay = _clean_str(payment_type or payment)
+    d_from = _clean_str(date_from)
+    d_to = _clean_str(date_to)
+    eff_limit = top_n or limit or 50
 
     base_sql = f"""
     SELECT TransactionID, Date, Time, StoreID, Location, Product, Quantity, UnitPrice, PaymentType, Cashier, StoreManager, TimeOfDay, DayOfWeek, TotalPrice
@@ -903,15 +846,11 @@ def get_retail_transactions(
 
 @mcp.tool(
     name="get_executive_sales_summary",
-    description="PRIMARY TOOL for total sales revenue across all channels, total enterprise revenue, channel revenue mix (online vs retail vs regional), top-selling products ranking, and #1 best seller product by revenue. ALWAYS call this tool for total revenue and top products questions.",
+    description="Calculate top-line executive KPIs across all channels: total revenue, online vs retail vs regional channel mix, order counts, and top-selling products ranking.",
 )
 def get_executive_sales_summary(
     product: str | None = None,
     product_name: str | None = None,
-    timeframe: str | None = None,
-    period: str | None = None,
-    year: int | str | None = None,
-    limit: int | None = None,
 ) -> dict[str, Any]:
     """Calculates top-line executive KPIs across all sales channels."""
     table_dataset = f"`{PROJECT_ID}.{DATASET_ID}`"
@@ -1007,19 +946,15 @@ def get_executive_sales_summary(
 
 @mcp.tool(
     name="get_omnichannel_comparison",
-    description="PRIMARY TOOL for comparing product performance and identifying #1 best seller product by revenue or volume side-by-side between Online Store Orders and Physical Retail Stores.",
+    description="Side-by-side revenue, volume, and average price comparison per product between Online Store Orders and Physical Retail Stores.",
 )
 def get_omnichannel_comparison(
     product: str | None = None,
-    product_name: str | None = None,
     limit: int = 50,
-    max_results: int | None = None,
-    max_rows: int | None = None,
 ) -> dict[str, Any]:
     """Provides side-by-side omnichannel channel performance breakdown per product."""
     table_dataset = f"`{PROJECT_ID}.{DATASET_ID}`"
-    target_product = _normalize_product_name(_clean_str(product or product_name))
-    eff_limit = max_results or max_rows or limit or 50
+    target_product = _normalize_product_name(_clean_str(product))
 
     filter_clause = ""
     params: list[tuple[str, str, Any]] = []
@@ -1066,33 +1001,26 @@ def get_omnichannel_comparison(
     ORDER BY total_revenue DESC
     LIMIT @limit
     """
-    params.append(("limit", "INT64", min(eff_limit, 500)))
+    params.append(("limit", "INT64", min(limit, 500)))
     rows = _execute_query(sql, params)
     return {"count": len(rows), "comparison": rows}
 
 
 @mcp.tool(
     name="get_inventory_restock_alerts",
-    description="PRIMARY TOOL for supply chain deficits, restock alerts, out-of-stock items, and inventory reorder priorities. Identifies all SKUs at or below their reorder threshold with estimated restock costs.",
+    description="Retrieve inventory restock alerts for supply chain: SKUs at or below reorder threshold with deficit units and estimated restock cost.",
 )
 def get_inventory_restock_alerts(
-    storage_location: str | None = None,
     warehouse: str | None = None,
-    location: str | None = None,
     supplier: str | None = None,
-    vendor: str | None = None,
     product: str | None = None,
-    product_name: str | None = None,
     limit: int = 100,
-    max_results: int | None = None,
-    max_rows: int | None = None,
 ) -> dict[str, Any]:
     """Provides actionable restock alerts for supply chain and procurement managers."""
     table_dataset = f"`{PROJECT_ID}.{DATASET_ID}`"
-    wh = _clean_str(storage_location or warehouse or location)
-    supp = _clean_str(supplier or vendor)
-    prod = _normalize_product_name(_clean_str(product or product_name))
-    eff_limit = max_results or max_rows or limit or 100
+    wh = _clean_str(warehouse)
+    supp = _clean_str(supplier)
+    prod = _normalize_product_name(_clean_str(product))
 
     filters = ["QuantityInStock <= ReorderPoint"]
     params: list[tuple[str, str, Any]] = []
@@ -1132,11 +1060,15 @@ def get_inventory_restock_alerts(
     ORDER BY DeficitUnits DESC, LeadTimeDays DESC
     LIMIT @limit
     """
-    params.append(("limit", "INT64", min(eff_limit, 1000)))
+    params.append(("limit", "INT64", min(limit, 1000)))
     rows = _execute_query(sql, params)
+    total_deficit = sum(r.get("DeficitUnits", 0) for r in rows)
+    total_cost = round(sum(r.get("EstimatedRestockCostUsd", 0.0) for r in rows), 2)
     return {
         "alert_count": len(rows),
-        "alerts": rows,
+        "total_deficit_units": total_deficit,
+        "total_estimated_restock_cost_usd": total_cost,
+        "alerts": rows[:25],
     }
 
 
@@ -1219,26 +1151,21 @@ def _rewrite_and_guard_sql(raw_query: str) -> tuple[str | None, str | None]:
 
 @mcp.tool(
     name="execute_custom_analytics_query",
-    description="FALLBACK TOOL ONLY: Executes a safe, read-only analytical SQL query against beam-suntory-gemini-llm-poc.sales_products when no specialized tool exists. For total revenue, top products, best sellers, restock alerts, or channel comparisons, ALWAYS use get_executive_sales_summary or get_omnichannel_comparison instead.",
+    description="Fallback tool for custom read-only SQL queries against beam-suntory-gemini-llm-poc.sales_products. Handles table name aliases and hyphenated names automatically.",
 )
 def execute_custom_analytics_query(
     query: str | None = None,
     sql: str | None = None,
-    sql_query: str | None = None,
-    statement: str | None = None,
     max_rows: int = 100,
-    limit: int | None = None,
-    max_results: int | None = None,
 ) -> dict[str, Any]:
     """Safe read-only BigQuery query runner with automatic quoting of hyphenated tables and alias resolution."""
-    raw_query = _clean_str(query or sql or sql_query or statement)
+    raw_query = _clean_str(query or sql)
     if not raw_query:
         return {
             "status": "error",
             "error": "Query string cannot be empty. Please provide a SQL query using the 'query' or 'sql' parameter.",
         }
 
-    eff_max = max_results or limit or max_rows or 100
     formatted_query, error_msg = _rewrite_and_guard_sql(raw_query)
     if error_msg:
         return {"status": "error", "error": error_msg}
@@ -1246,7 +1173,7 @@ def execute_custom_analytics_query(
     try:
         client = get_bigquery_client()
         query_job = client.query(formatted_query)
-        results = query_job.result(max_results=min(eff_max, 1000))
+        results = query_job.result(max_results=min(max_rows, 1000))
         rows = [dict(row) for row in results]
         return {
             "status": "success",
