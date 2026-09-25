@@ -15,6 +15,7 @@ members = [
     "rag-server",
     "registry-gateway",
     "sales-products-server",
+    "weather-server",
 ]
 
 [[package]]
@@ -26,6 +27,7 @@ dependencies = [
     { name = "rag-server" },
     { name = "registry-gateway" },
     { name = "sales-products-server" },
+    { name = "weather-server" },
 ]
 
 [package.dev-dependencies]
@@ -44,6 +46,7 @@ requires-dist = [
     { name = "rag-server", editable = "servers/rag_server" },
     { name = "registry-gateway", editable = "registry" },
     { name = "sales-products-server", editable = "servers/sales_products_server" },
+    { name = "weather-server", editable = "servers/weather_server" },
 ]
 
 [package.metadata.requires-dev]
@@ -1246,6 +1249,24 @@ cli = [
 ]
 
 [[package]]
+name = "mcp-weather-server"
+version = "0.6.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "mcp", extra = ["cli"] },
+    { name = "python-dateutil" },
+    { name = "python-dotenv" },
+    { name = "starlette" },
+    { name = "tzdata" },
+    { name = "uvicorn" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/df/c6/1ef4ec4582bf4b906fa3e60036d3ebc7f0a0684e8c8bedf1a0665f876f76/mcp_weather_server-0.6.1.tar.gz", hash = "sha256:ad85f11949c038e52c08dcea3d84c0410042d22fe47c63c87695a6fedc4d798c", size = 55592, upload-time = "2025-12-13T13:21:29.089Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/20/46/a9dc4b4a60be43d0adaa086a191380e4965846635984c8f214c567c06148/mcp_weather_server-0.6.1-py3-none-any.whl", hash = "sha256:049948f33f79c172dcaa64a845ef91ec7b64a7141919f122e9c1ecbaf8c6c6f9", size = 33651, upload-time = "2025-12-13T13:21:27.851Z" },
+]
+
+[[package]]
 name = "mdurl"
 version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2442,6 +2463,29 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/56/fe/cb8ef3d6f929d14158fdaaad9925985b7310abc9384dcd4d82dd0016fb59/watchfiles-1.2.0-cp315-cp315-manylinux_2_31_riscv64.whl", hash = "sha256:cee9d5efd929efdac5f7e58f72b3376f676b64050a91c5b99a7094c5b2317488", size = 465096, upload-time = "2026-05-18T04:31:30.384Z" },
     { url = "https://files.pythonhosted.org/packages/25/91/80908e835e100527a9267147b08c0eee1fa6ab0ffec15edc04d1d44885f7/watchfiles-1.2.0-cp315-cp315-musllinux_1_1_aarch64.whl", hash = "sha256:b718bf356bbc15e559bd8ef41782b573b8ae0e3f177ab244b440568d7ea02cfb", size = 630638, upload-time = "2026-05-18T04:30:49.89Z" },
     { url = "https://files.pythonhosted.org/packages/46/4b/95ab2f256bb4af3cb2eb23b9317bda984ee6e0f11733a5c004a6c95b06e3/watchfiles-1.2.0-cp315-cp315-musllinux_1_1_x86_64.whl", hash = "sha256:922c0e019fe68b3ae392965a766b02a71ba1168c932cebc3733cd52c5fe5b377", size = 657684, upload-time = "2026-05-18T04:31:32.027Z" },
+]
+
+[[package]]
+name = "weather-server"
+version = "0.1.0"
+source = { editable = "servers/weather_server" }
+dependencies = [
+    { name = "fastmcp" },
+    { name = "httpx" },
+    { name = "mcp", extra = ["cli"] },
+    { name = "mcp-weather-server" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastmcp", specifier = ">=0.1.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.0.0" },
+    { name = "mcp-weather-server", specifier = ">=0.6.1" },
+    { name = "starlette", specifier = ">=0.20.0" },
+    { name = "uvicorn", specifier = ">=0.20.0" },
 ]
 
 [[package]]

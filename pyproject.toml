@@ -8,6 +8,7 @@ dependencies = [
     "rag-server",
     "ppt-server",
     "sales-products-server",
+    "weather-server",
     "registry-gateway",
 ]
 
@@ -25,13 +26,14 @@ dev = [
 rag-server = { workspace = true }
 ppt-server = { workspace = true }
 sales-products-server = { workspace = true }
+weather-server = { workspace = true }
 registry-gateway = { workspace = true }
 
 [tool.uv]
 workspace = { members = ["registry", "servers/*"]}
 
 [tool.pytest.ini_options]
-pythonpath = ["servers/rag_server/src", "servers/ppt_server/src", "servers/sales_products_server/src", "registry/src"]
+pythonpath = ["servers/rag_server/src", "servers/ppt_server/src", "servers/sales_products_server/src", "servers/weather_server/src", "registry/src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 

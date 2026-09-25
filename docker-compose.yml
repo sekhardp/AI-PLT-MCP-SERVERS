@@ -39,6 +39,16 @@ services:
     volumes:
       - ~/.config/gcloud:/root/.config/gcloud:ro
 
+  weather-server:
+    build:
+      context: .
+      dockerfile: servers/weather_server/Dockerfile
+    ports:
+      - "${WEATHER_SERVER_PORT:-8070}:8080" # Maps local port 8070 to container port 8080
+    environment:
+      - PORT=8080
+      - MCP_TRANSPORT=sse
+
   registry-gateway:
     build:
       context: .
@@ -50,8 +60,11 @@ services:
       - SERVER_RAG_SERVER_URL=${SERVER_RAG_SERVER_URL:-http://rag-server:8080/sse}
       - SERVER_PPT_SERVER_URL=${SERVER_PPT_SERVER_URL:-http://ppt-server:8080/sse}
       - SERVER_SALES_PRODUCTS_SERVER_URL=${SERVER_SALES_PRODUCTS_SERVER_URL:-http://sales-products-server:8080/sse}
+      - SERVER_WEATHER_SERVER_URL=${SERVER_WEATHER_SERVER_URL:-http://weather-server:8080/sse}
     depends_on:
       - rag-server
       - ppt-server
       - sales-products-server
+      - weather-server
+
 

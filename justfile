@@ -59,3 +59,15 @@ run-sales-sse port="8060":
 inspect-sales:
     uv run --package sales-products-server fastmcp dev inspector servers/sales_products_server/src/sales_products_server/main.py
 
+# Run the Weather Server locally using stdio transport
+run-weather-stdio:
+    uv run --package weather-server weather-server --transport stdio
+
+# Run the Weather Server locally using SSE transport on a specific port
+run-weather-sse port="8070":
+    uv run --package weather-server weather-server --transport sse --port {{port}}
+
+# Launch the official visual MCP Inspector for the Weather Server
+inspect-weather:
+    uv run --package weather-server fastmcp dev inspector servers/weather_server/src/weather_server/main.py
+
